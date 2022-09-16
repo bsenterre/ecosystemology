@@ -1,0 +1,798 @@
+---
+title: "How to install rgee with a python environment within a specific project in R and RStudio"
+author: "Bruno Senterre"
+date: "1/09/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, include = TRUE, message = FALSE, warning = FALSE)
+```
+
+webpages consulted:
+https://www.youtube.com/watch?v=_fDhRL_LBdQ&t=168s
+https://support.rstudio.com/hc/en-us/articles/360023654474-Installing-and-Configuring-Python-with-RStudio
+https://support.rstudio.com/hc/en-us/articles/360047157094-Managing-R-with-Rprofile-Renviron-Rprofile-site-Renviron-site-rsession-conf-and-repos-conf
+https://r-spatial.github.io/rgee/
+https://rstudio.github.io/reticulate/articles/python_packages.html
+https://rstudio.github.io/reticulate/articles/versions.html
+https://github.com/r-spatial/rgee/tree/help/rstudio/
+https://cran.r-project.org/web/packages/rgee/vignettes/rgee01.html
+https://www.rdocumentation.org/packages/rgee/versions/0.2.0
+https://github.com/r-spatial/sf#installing
+https://rdrr.io/github/csaybar/rgee/
+https://www.google.com/search?q=install+python+virtual+environment+for+r+within+a+project&sxsrf=ALiCzsZatO8A206S1sWpl6-mi1-ELCBl3Q%3A1662267554080
+https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/
+
+# Introduction
+Installing rgee can be really a painful task ... It took me two days to understand enough of python, anaconda and miniconda virtual environments, and rgee, to finally be able to get over allllll the bugs ...
+
+The key is really in the understanding of .Renviron files, and especially when combined with the use of isolated RStudio project using th renv package.
+
+By default, an R script will use any information that is in the global R environment, i.e. in the files 
+"Documents\.Renviron", "Documents\.Rhistory", "Documents\.Rprofile"
+
+When I create an RStudio project in an isolated folder, with its own environment and libraries, using renv, I will want to have a project-specific .Renviron file. To do that
+
+```{r}
+install.packages("usethis")
+library(usethis)
+usethis::edit_r_environ() #To see the .Renviron file of the global R environment
+usethis::edit_r_environ(scope = "project") #To see the one of the project, thus if the project does not have one usethis will create it (it could also have been done manually using a text file renamed ".Renviron")
+```
+
+This is key because, other projects and other R scripts that will require editing the .Renviron file will affect (stop) rgee to understand Earth Engine (python) if it changes the .Renviron file used by rgee. So we definitly need a project-specific .Renviron file.
+
+That .Renvion file will have to contain a very specific text, and the standard installation of rgee (at least on Windows machines) does not produce it exactly as it should, so the main difficulty in the end was to understand what exactly is needed in the local .Renviron file.
+
+# Create my RStudio project "bioecosystem"
+Open RStudio as Admin (start menu, right click)
+File > New project > name it bioecosystem in ZAnalysis, using renv
+Copy my draft bioecosystem.Rmd file in the folder bioecosystem
+Open it in RStudio
+Install Rmarkdown as he requests it
+
+# Install all the packages that we will be needed for the rgee installation and set up (done once in project)
+```{r}
+install.packages("pacman") #this is a wraper for require + install + library
+library(pacman)
+p_load(sf, geojsonio, remotes, devtools, googledrive)
+#Otherwize, withou pacman things take more lines:
+install.packages("rgee")
+library(rgee)
+install.packages("reticulate")
+library(reticulate)
+```
+
+# Installing rgee and its python virtual environment manually
+Having not understood how the standard ee_install() worked and what was a "python environment", I thought that the problem was with the ee_install() and I found a webpage telling how to install rgee manually so I tried it, and got some understanding of python and conda out of it.
+
+start menu "anaconda-miniconda3" (msdos window)
+d:
+cd ZAnalysis\bioecosystem\
+conda create -n rgee_py_bioecosystem python=3.8
+activate rgee_py_bioecosystem
+pip install google-api-python-client
+*This does not work: conda install earthengine-api==0.1.322
+*So I downloaded the package and put it locally in ZAnalysis\bioecosystem\; then I run below
+pip install earthengine-api-0.1.322.tar.gz
+pip install numpy
+pip install ee
+*N.B. To install more packages in dos anaconda, I need to be where I see this: (rgee_py_bioecosystem) *D:\ZAnalysis\bioecosystem>
+*Which shows that I am in the right virtual environment and that it is activated
+*Check on the environments:
+conda env list
+*Printed result:
+	(rgee_py_bioecosystem) D:\ZAnalysis\bioecosystem>conda env list
+	# conda environments:
+	#
+	                         C:\Users\bsent\AppData\Local\R-MINI~1
+	                         C:\Users\bsent\AppData\Local\R-MINI~1\envs\r-reticulate
+	                         C:\Users\bsent\AppData\Local\R-MINI~1\envs\rgee
+	                         C:\Users\bsent\AppData\Local\r-miniconda\envs\rgee
+	base                     C:\Users\bsent\miniconda3
+	rgee_py                  C:\Users\bsent\miniconda3\envs\rgee_py
+	rgee_py_bioecosystem  *  C:\Users\bsent\miniconda3\envs\rgee_py_bioecosystem
+*save that path in my R script
+*NOT WORKING: rgee_environment_dir = "C:\\Users\\bsent\\miniconda3\\envs\\rgee_py_bioecosystem\\"
+
+Do not run ee_install() since this is done by the above manual replacement
+In Rstudio, with rgee and reticulate loaded:
+```{r}
+#check what python environment the project is using
+reticulate::py_config() #Is it the one I installed?
+ee_check() #Did he get the right Earth Engine API?
+
+#To force the script to associate reticulate with the correct python environment, do this:
+usethis::edit_r_environ(scope = "project")
+
+#And paste the text below in it, plus one empty line at the end:
+```
+#PATH="${RTOOLS40_HOME}\usr\bin;${PATH}"
+EARTHENGINE_INIT_MESSAGE="True"
+RETICULATE_PYTHON="C:\Users\bsent\miniconda3\envs\rgee_py\python.exe"
+EARTHENGINE_PYTHON="C:\Users\bsent\miniconda3\envs\rgee_py\python.exe"
+EARTHENGINE_ENV="rgee_py"
+
+Then restart RStudio and the project, and check again
+reticulate::py_config()
+
+If ee_check() does not recognize EE API or throw a warning about version issue, 
+download manually the 322 version: earthengine-api-0.1.322.tar.gz
+place it in the root directory corresponding to what you see when starting msdos anaconda-miniconda3
+in anaconda-miniconda:
+conda activate rgee_py #to activate my virtual environment
+pip install earthengine-api-0.1.322.tar.gz #to install manually the last version of EE API
+
+In RStudio, check again if now the ee_check() function returns an error with the EE API
+
+**P.S. Note:**
+All the above was a bit messy. Navigating to my bioecosystem directory has anyway no impact on where the virtual environment would be created, which is in miniconda3 ...
+This, altogether, is supposed to be done automatically by rgee, when using the function ee_install() BUT unfortunately a bunch or bugs exist depending on which version of rgee package you use and your system. The bugs seems to have to do with :
+  -the location used for the created virtual python environment (see the list of environments printed above ... but with Windows, only miniconda can be used, so we have to create the virtual environment manually (e.g. named 'rgee_py'), and then use ee_install(py_env = "rgee").
+  -the version of python, of rgee, and of earthengine-api
+  -a bug with access to the most up-to-date version of earthengine-api (earthengine-api-0.1.322)
+
+# Installing rgee and its python virtual environment using ee_install()
+After many attempts, I finally cleaned my environment and tried again the normal way, but this time with a better understanding of the function of .Renviron and python virtual environment, and their location
+
+```{r}
+install.packages("rgee")
+library(rgee)
+install.packages("reticulate")
+library(reticulate)
+
+#Clean my messed up rgee_py environment created manually
+rm(list = ls()); gc()
+ee_clean_pyenv()
+
+#Install the python environment using the traditional way
+ee_install(py_env = "rgee_py")
+
+#During that process, rgee will write the the .Renviron file (but the global environment one)
+#rgee::ee_install want to store the environment variables: EARTHENGINE_PYTHON and EARTHENGINE_ENV in your .Renviron file to use the Python path: C:\Users\bsent\AppData\Local\r-miniconda\envs\rgee/python.exe in future sessions.
+####???? I don't remember exactly what I did, and how I finally got it right in miniconda3, not r-miniconda
+#BUT #I managed to have ee_check returning no error and no warning by correcting the path in my project's Renviron to : "C:\Users\bsent\miniconda3\envs\rgee_py\python.exe"!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+#Checks: before restarting R, check the global .Renviron and project's .Renviron
+library(usethis)
+usethis::edit_r_environ(scope = "project")
+
+#He was still using my rgee_py_bioecosystem env since this is the one in the projects' .Renviron. So I copy-pasted the global .Renviron content and pasted it in the project's .Renviron. PLUS, I kept the RECTICULATE_PYTHON that was missing from the global Renv
+#After restrating R, I check
+library(reticulate)
+reticulate::py_config()
+
+ee_check()
+#I get again the same message that it uses EEAPI321 in place of 322
+#Anyway, let's just try to Initialize now
+library(googledrive)
+rgee::ee_Initialize(drive = T)
+
+#BUG persisted, so
+ee_install_upgrade()
+#Since ee_install_upgrade() does not work, I did it manually
+#start Anaconda miniconda3 in dos
+#conda activate rgee_py
+#move my local downloaded copy of api322 to Users/bsent/
+#pip install earthengine-api-0.1.322.tar.gz
+
+ee_check()
+#THAT WORKED!! No error message and no warning. Because my project's .Renviron file is correct, this will now work each time I start a new R session.
+
+#BUT I still have now the gcloud error to log in my EE credential, so I follow the procedure https://github.com/r-spatial/rgee/issues/269
+ee_users()
+ee_clean_credentials("bsenterre")
+
+#Then I installed gcloud using all default options
+#I restarted the computed
+#Started the bioecosystem R project
+#Loaded rgee, reticulate and googledrive
+#ee_check() just to make sure that install issue was still ok
+#run the Initialize ee_Initialize(drive = T)
+#AND IT WORKED!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+```
+
+
+# Older notes from rgee_install.txt file
+```{r}
+#### 2a. Install and configure reticulate to use my Python environment: in RStudio, in my script
+#create a file in your project directory
+install.packages("usethis")
+usethis::edit_r_environ(scope = "project")
+#In the newly created .Renviron created, paste the following 4 lines, plus a last empty one
+EARTHENGINE_INIT_MESSAGE="True"
+RETICULATE_PYTHON="C:\Users\bsent\miniconda3\envs\rgee_py_bioecosystem/python.exe"
+EARTHENGINE_PYTHON="C:\Users\bsent\miniconda3\envs\rgee_py_bioecosystem/python.exe"
+EARTHENGINE_ENV="rgee_py_bioecosystem"
+
+#### 2b. Close and Restart the R project and check that it worked
+library(usethis)
+library(reticulate)
+reticulate::py_config() #= function to query for information about the specific version of Python in use as well as a list of other Python versions discovered on the system
+#If it worked the consolle will show me the rgee_py_bioecosystem python environment
+#You can also use the py_discover_config() function to see what version of Python will be used without actually loading Python:
+
+##### 3. Now that the environment is ok, install rgee package
+#Load other rgee-related packages
+install.packages("pacman")
+library(pacman)
+p_load(sf, geojsonio, remotes, devtools, googledrive)
+In your script in your RStudio project, install the latest version of this package by entering the following in R (best is from the author):
+	install.packages("remotes")
+	remotes::install_github("csaybar/rgee")
+
+NO NEED TO USE ANY OF THE rgee::ee_instal() since I have done it all manually above
+
+N.B.: ee_install() does this:
+	If you do not have a Python environment, it will display an interactive menu to install Miniconda (a free minimal installer for conda).
+	Remove the previous Python environment defined with the same name if it exists.
+	Create a new Python environment.
+	Set the environmental variables EARTHENGINE_PYTHON and EARTHENGINE_ENV. These variables will be used to define the reticulate environmental variable RETICULATE_PYTHON when rgee is loaded.
+	Install rgee Python dependencies: Earth Engine Python API and numpy.
+	Ask to restart the R session in order to see changes.
+
+Just check and try to Initialize rgee:
+	library(rgee)
+	rgee:ee_check()
+	ee_check_python() - Python version
+	ee_check_credentials() - Google Drive and GCS credentials
+	ee_check_python_packages() - Python packages
+	ee_discover_pyenvs() #Find all python environments in a system
+
+	rgee::ee_Initialize() #OR BETTER: ee_Initialize(user = 'bsenterre@gmail.com', drive = TRUE)
+
+
+######################################Earlier notes
+
+##### 1. Install python environment
+rgee depends on python packages numpy + ee
+Three ways:
+rgee::ee_install()
+rgee::ee_install_set_pyenv(py_path="", py_env="")
+set path to python interpreter in RStudio, within project
+
+None of these really work for me, so I might have to do it manually using the third option, after setting the virtual env
+	1 have miniconda anaconda installed
+	2 be up-to-date with pip (the python installer for packages)
+	py -m pip install --upgrade pip
+	3 create the virtual environment for the R project
+	d:
+	cd ZAnalysis\bioecosystem\
+	py -m venv rgee_py #rgee_py is the name I pick for my virtual environment PICK A UNIQUE NAME TO THE PROJECT: rgee_py_bioecosystem
+	.\rgee_py\Scripts\activate #to activate this virtual env so that stuff are being instaled there
+	where python #function to check what is the current python interpreter, so it should be the one of my virtual env i.e. ...\env\Scripts\python.exe
+	which python
+
+BUT in fact the first line of code from xx was to create and name a virtual env, and install in it python, all at once using the conda create command
+	conda create -n rgee_py_bioecosystem python=3.8 #Do not install 3.9 python as this is more unstable with many other packages
+
+##### 1b. Install packages in my project-specific python environment	
+	activate rgee_py_bioecosystem
+	pip install google-api-python-client
+
+	conda install earthengine-api==0.1.322
+	#THE ABOVE SEEMS TO BE THE CORRECT SOLUTION FOR WINDOWS (for manual installation, not using the ee_install() from R
+	#If he cannot get that version 322, I can instal from local copy:
+	pip install earthengine-api==0.1.322.tar.gz
+
+	#Another option from within R is: reticulate::py_install('earthengine-api==0.1.322', envname='my_rgee_named_envxx')
+	pip install earthengine-api #OR?? conda install -c conda-forge earthengine-api  ## OR?? py_install( "earthengine-api==0.1.277", "rgee")
+	#OR pip install earthengine-api==0.1.277
+	NOTE: The Earth Engine Python API version 0.1.302 is installed
+	correctly in the system but rgee was tested using the version
+	0.1.322. To avoid possible issues, we recommend install the
+	version used by rgee (0.1.322). You might use:
+	* rgee::ee_install_upgrade()
+	* reticulate::py_install('earthengine-api==0.1.322', envname='PUT_HERE_YOUR_PYENV')
+	* pip install earthengine-api==0.1.322 (Linux and Mac0S)
+	* conda install earthengine-api==0.1.322 (Linux, Mac0S, and Windows)
+
+	pip install numpy
+
+## ok conda should now be installed, now lets get the path to the environment, type inside anaconda:
+	conda env list #gives me C:\Users\bsent\miniconda3\envs\rgee_py	
+
+	#save that path
+	rgee_environment_dir = "C:\\Users\\bsent\\miniconda3\\envs\\rgee_py\\"
+
+
+##### 2. Install and configure reticulate to use your Python version
+Each version of Python on your system has its own set of packages and reticulate will automatically find a version of Python that contains the first package
+ that you import from R. Thus we need to configure reticulate to use a specific version of Python.
+The reticulate package makes it possible to load and use Python within the currently running R session. 
+	install.packages("reticulate")
+	#To configure reticulate to point to the Python executable in your virtualenv, 
+	#create a file in your project directory called 
+	.Renviron #with the following contents:
+	RETICULATE_PYTHON=my_env/bin/python
+	#This should be the same as: reticulate::use_python(rgee_environment_dir, required=T)
+	#OR
+	base::Sys.setenv(RETICULATE_PYTHON = rgee_environment_dir)
+	base::Sys.setenv(EARTHENGINE_PYTHON = rgee_environment_dir)
+
+	The RETICULATE_PYTHON environment variable can also be used to configure the default version of Python to be used by reticulate. 
+	If set, that environment variable will take precedence over any value configured via RStudio options.
+
+	Restart the R project and check that it worked
+	reticulate::py_config() #= function to query for information about the specific version of Python in use as well as a list of other Python versions discovered on the system
+You can also use the py_discover_config() function to see what version of Python will be used without actually loading Python:
+	py_discover_config()
+
+##### 3. Now that the environment is ok, install rgee package
+#Load other rgee-related packages
+	install pacman
+	p_load(sf, geojsonio, remotes, devtools, googledrive)
+In your script in your RStudio project, install the latest version of this package by entering the following in R (best is from the author):
+	install.packages("remotes")
+	remotes::install_github("csaybar/rgee")
+
+NO NEED TO USE ANY OF THE rgee::ee_instal() since I have done it all manually above
+
+N.B.: ee_install() does this:
+	If you do not have a Python environment, it will display an interactive menu to install Miniconda (a free minimal installer for conda).
+	Remove the previous Python environment defined with the same name if it exists.
+	Create a new Python environment.
+	Set the environmental variables EARTHENGINE_PYTHON and EARTHENGINE_ENV. These variables will be used to define the reticulate environmental variable RETICULATE_PYTHON when rgee is loaded.
+	Install rgee Python dependencies: Earth Engine Python API and numpy.
+	Ask to restart the R session in order to see changes.
+
+Just check and try to Initialize rgee:
+	library(rgee)
+	rgee:ee_check()
+	ee_check_python() - Python version
+	ee_check_credentials() - Google Drive and GCS credentials
+	ee_check_python_packages() - Python packages
+	ee_discover_pyenvs() #Find all python environments in a system
+
+	rgee::ee_Initialize() #OR BETTER: ee_Initialize(user = 'bsenterre@gmail.com', drive = TRUE)
+
+
+
+#Restart R, or even reboot computer, then open again the RStudio project
+#Load the path to our python virtual env
+rgee_environment_dir = "C:\\Users\\bsent\\miniconda3\\envs\\rgee_py\\"
+
+# set python ####I really need to make sure he is gonna install in my Project's virtual env
+reticulate::use_python(rgee_environment_dir, required=T) #This is the same as setting Global properties of the RStudio project for python interpreter
+rgee::ee_install_set_pyenv(
+  py_path = rgee_environment_dir, # Change it for your own Python PATH  #win_py_path = paste0("C:/Users/bsent/AppData/Local/r-miniconda/envs/rgee/", "python.exe")
+  py_env = "rgee_py" # Change it for your own Python ENV
+)
+# or ee_install_set_pyenv(py_path = win_py_path, py_env = "rgee")
+# or ee_install_set_pyenv(
+  py_path,
+  py_env = NULL,
+  Renviron = "global",
+  confirm = interactive(),
+  quiet = FALSE
+)
+
+#Before restarting R, make those parameters be permanent xxx is this what it does??
+Sys.setenv(RETICULATE_PYTHON = rgee_environment_dir)
+Sys.setenv(EARTHENGINE_PYTHON = rgee_environment_dir)
+#This is equivalent to what ee_install() does, when at the end it asks this
+rgee::ee_install want to store the environment variables: EARTHENGINE_PYTHON 
+and EARTHENGINE_ENV in your .Renviron file to use the Python path:
+C:\Users\bsent\AppData\Local\r-miniconda\envs\rgee/python.exe in future sessions.
+
+
+##### 3. After install python dependencies and restart R
+rgee::ee_check()
+ee_Initialize()
+
+win_py_path = paste0("C:/Users/bsent/AppData/Local/r-miniconda/envs/rgee/", "python.exe")
+ee_install_set_pyenv(py_path = win_py_path, py_env = "rgee") # Change it for your own Python ENV
+
+
+################# .Renviron
+rgee_environment_dir = "C:\\Users\\bsent\\miniconda3\\envs\\rgee_py\\"
+
+base::Sys.setenv(RETICULATE_PYTHON = rgee_environment_dir)
+base::Sys.setenv(EARTHENGINE_PYTHON = rgee_environment_dir)
+
+install.packages("usethis")
+library(usethis)
+#Create or edit a user-wide .Renviron file
+usethis::edit_r_environ()
+#Or a project-specific one
+usethis::edit_r_environ(scope = "project")
+
+#In R, you can access the environment variables by using the Sys.getenv() function.
+Sys.getenv()
+Sys.getenv('EARTHENGINE_PYTHON')
+
+base::Sys.setenv(RETICULATE_PYTHON = "xx", scope = "project")
+```
+
+# Older notes from bioecosystem script
+For easier installation of rgee on Windows check this: https://www.youtube.com/watch?v=1-k6wNL2hlo
+not so much this: http://www.css.cornell.edu/faculty/dgr2/_static/files/R_html/ex_rgee.html
+```{r eval = FALSE}
+install.packages("reticulate")
+install.packages("usethis")
+library(usethis)
+usethis::edit_r_environ(scope = "project")
+library(reticulate)
+reticulate::py_config()
+
+install.packages("pacman")
+library(pacman)
+p_load(sf, geojsonio, remotes, devtools, googledrive)
+
+#Now install finally rgee (best is from the author):
+install.packages("rgee") #remotes::install_github("csaybar/rgee")
+library(rgee)
+library(googledrive)
+
+#NO NEED TO USE ANY OF THE rgee::ee_install() since I have done it all manually above
+#Just check and try to Initialize rgee:
+ee_check()
+ee_check_python() - Python version
+ee_check_credentials() - Google Drive and GCS credentials
+ee_check_python_packages() - Python packages
+ee_discover_pyenvs() #Find all python environments in a system
+
+#Finally try to initialize (this task will be done at each session, except for credentials)
+ee_Initialize(user = 'bsenterre@gmail.com', drive = TRUE)#, gcs = FALSE) # OR rgee::ee_Initialize()
+#If it failed (e.g. Fetching credentials using gcloud), clean and try again
+ee_users()
+ee_clean_credentials("bsenterre")
+
+#Trying reinstall rgee
+remotes::install_github("r-spatial/rgee") #1.1.4
+ee_install_upgrade()
+reticulate::py_install('earthengine-api==0.1.317')#, envname='rgee_py_bioecosystem')
+
+rgee_environment_dir = "C:\\Users\\bsent\\miniconda3\\envs\\rgee_py_bioecosystem\\"
+rgee::ee_install_set_pyenv(
+  py_path = rgee_environment_dir, # Change it for your own Python PATH
+  py_env = "rgee_py_bioecosystem" # Change it for your own Python ENV
+)
+
+
+
+
+
+
+ee_Initialize(user = 'bsenterre@gmail.com')
+user = 'bsenterre@gmail.com'
+
+# 1. Install the python environment and API: Do not use the ee_install() but this:
+
+# clean environment
+rm(list = ls()); gc()
+
+# general libraries
+install.packages("pacman")
+library(pacman)
+
+# GEE account -------------------------------------------------------------
+## you need a GEE account
+## log in the https://code.earthengine.google.com/ and register for one
+
+# installing conda environment --------------------------------------------------------------------
+## the conda environment is where the GEE Python API will be located. The RGEE package uses it.
+## first you need to install the Miniconda OUTSIDE of R
+## install Miniconda3 at https://docs.conda.io/en/latest/miniconda.html
+## open 'anaconda' in the command prompt (window button --> anaconda, you will see anaconda prompt)
+## then type in the commands below one-by-one (without the #) to install the rgee_py environment and packages:
+# conda create -n rgee_py python=3.9
+# activate rgee_py
+# pip install google-api-python-client
+# pip install earthengine-api
+# pip install numpy
+
+## ok conda should now be installed, now lets get the path to the environment, type inside anaconda:
+# conda env list #gives me C:\Users\bsent\miniconda3\envs\rgee_py
+
+## copy the path to the rgee_py environment, you will need it set in the variable below inside R:
+## note the use of double backslashes \\ 
+## this below is where is located in MY computer, you have to use the 'conda env list' command to find where it is located on yours
+#rgee_environment_dir = "C:\\ProgramData\\Miniconda3\\envs\\rgee_py\\"
+rgee_environment_dir = "C:\\Users\\bsent\\miniconda3\\envs\\rgee_py\\"
+#NOT#rgee_environment_dir = "D:\\ZAnalysis\\bioecosystem\\renv\\python\\r-reticulate\\"
+
+
+# pre-requirements for R --------------------------------------------------
+
+## R: version at least 3.6 (this is the version that I tested so far and works)
+# Link: https://cran.r-project.org/bin/windows/base/
+
+## RStudio: a recent version is recommended.
+## Older versions do not show the GEE images in Viewer correctly.
+# Link: https://www.rstudio.com/products/rstudio/download/
+
+##############NOT SURE THAT THIS IS REQUIRED
+## RTools: needed to build some packages in R from source
+# Link: https://cran.r-project.org/bin/windows/Rtools/
+## after installing the Rtools, make sure to run this command line below inside RStudio:
+# writeLines('PATH="${RTOOLS40_HOME}\\usr\\bin;${PATH}"', con = "~/.Renviron")
+##############
+
+
+# 2. Now that the environment is ok, install rgee package
+# R packages -------------------------------------------------------------
+## if you installed everything above, you can now install the packages inside R
+
+# rgee and some more specific packages related to using the rgee
+p_load(rgee, geojsonio, remotes, reticulate, devtools, googledrive)
+#NOT NEEDED???#: devtools::install_github("r-spatial/rgee")
+
+## sometimes at this point you are required to restart R or the computer before proceeding
+## try restarting if the installation do not finish properly and run the installation again after restart
+
+#reload the needful for next step
+rgee_environment_dir = "C:\\Users\\bsent\\miniconda3\\envs\\rgee_py\\"
+#NOOOOO DONT RUN THIS BEFORE SETTING RETICULATE #library(reticulate), neither #library(rgee)
+
+# set python
+reticulate::use_python(rgee_environment_dir, required=T)
+rgee::ee_install_set_pyenv(
+  py_path = rgee_environment_dir, # Change it for your own Python PATH
+  py_env = "rgee_py" # Change it for your own Python ENV
+)
+
+#Restart then rerun the rgee_environment_dir and then the 2 lines below to set the envi
+Sys.setenv(RETICULATE_PYTHON = rgee_environment_dir)
+Sys.setenv(EARTHENGINE_PYTHON = rgee_environment_dir)
+
+####################################### Bruno notes
+#Sometimes still not working, I had to do the below (sometimes not)
+#library(usethis)
+#usethis::edit_r_environ()
+#And replace: "C:\Users\bsent\miniconda3\envs\rgee_py"
+#by "C:\Users\bsent\miniconda3\envs\rgee_py/python.exe"
+#If I keep having issues in future sessions I might also need to usethis::edit_r_profile(), to make the change permanent
+#######################################
+
+#Check that it worked
+library(reticulate)
+library(rgee)
+ee_check()
+
+#Try to initialize a EE R session (will be done each time you are in your script, unlike above)
+library(googledrive)
+rgee::ee_Initialize(drive = T)
+
+## It worked if some text about google drive credentials appeared, and asked you to log in your GEE account.
+## Congrats.
+
+
+########################################## TRYING AGAIN: the manual install in rgee_py_bioecosystem env did not work probably due to incompatibilities of the python packages incl. the ee api
+#Load rgee installed simply by install.packages("rgee")
+library(rgee)
+# clean environment
+rm(list = ls()); gc()
+ee_clean_pyenv()
+#Install the python environment using the traditional way
+ee_install(py_env = "rgee")
+#PATH to my environment as saved in my .Renviron file
+#rgee::ee_install want to store the environment variables: EARTHENGINE_PYTHON and EARTHENGINE_ENV in your .Renviron file to use the Python path: C:\Users\bsent\AppData\Local\r-miniconda\envs\rgee/python.exe in future sessions.
+
+#Checks: before restarting R, check the global .Renviron and project's .Renviron
+library(usethis)
+usethis::edit_r_environ(scope = "project")
+#He was still using my rgee_py_bioecosystem env since this is the one in the projects' .Renviron. So I copy-pasted the global .Renviron content and pasted it in the project's .Renviron. PLUS, I kept the RECTICULATE_PYTHON that was missing from the global Renv
+#After restrating R, I check
+library(reticulate)
+reticulate::py_config()
+#Gives: C:/Users/bsent/AppData/Local/r-miniconda/envs/rgee/python.exe
+ee_check()
+#I get again the same message that it uses EEAPI321 in place of 322
+#Anyway, let's just try to Initialize now
+library(googledrive)
+rgee::ee_Initialize(drive = T)
+
+ee_install_upgrade()
+#Since it does not work, I will do it manually
+#start Anaconda miniconda3 in do
+#conda activate rgee_py
+#move my local downloaded copy of api322 to Users/bsent/
+#pip install earthengine-api-0.1.322.tar.gz
+
+#Now after restart R I get
+Error in py_discover_config(required_module, use_environment) : 
+  Python specified in RETICULATE_PYTHON (C:\Users\bsent\AppData\Local\r-miniconda\envs\rgee_py/python.exe) does not exist
+
+#I managed to have ee_check returning no error and no warning by correcting the path in my project's Renviron to : "C:\Users\bsent\miniconda3\envs\rgee_py\python.exe"
+
+#BUT I still have now the gcloud error to log in my EE credential, so I follow the procedure https://github.com/r-spatial/rgee/issues/269
+ee_users()
+ee_clean_credentials("bsenterre")
+
+#Then I installed gcloud using all default options
+#I restarted the computed
+#Started the bioecosystem R project
+#Loaded rgee, reticulate and googledrive
+#ee_check() just to make sure that install issue was still ok
+#run the Initialize ee_Initialize(drive = T)
+#AND IT WORKED!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+```
+
+# Mess of trying to solve rgee installation
+```{r eval = FALSE}
+reinstalled R and RStudio
+cleaned environment, but then not following intro code
+remotes::install_github("r-spatial/rgee")
+library(rgee)
+ee_install()
+
+works but wronk earthengine api
+tried
+conda install earthengine-api==0.1.322
+fails
+tried
+conda install -c conda-forge earthengine-api
+worked
+rebooted the computer
+library(rgee)
+ee_check()
+still dont worj
+library(usethis)
+usethis::edit_r_environ()
+
+ee_clean_pyenv()
+library(rgee)
+ee_install(py_env = "rgee")
+reticulate::py_install('earthengine-api==0.1.322', envname='rgee')
+
+NOTE: The Earth Engine Python API version 0.1.302 is installed
+correctly in the system but rgee was tested using the version
+0.1.322. To avoid possible issues, we recommend install the
+version used by rgee (0.1.322). You might use:
+* rgee::ee_install_upgrade()
+* reticulate::py_install('earthengine-api==0.1.322', envname='PUT_HERE_YOUR_PYENV')
+* pip install earthengine-api==0.1.322 (Linux and Mac0S)
+* conda install earthengine-api==0.1.322 (Linux, Mac0S, and Windows)
+
+
+install.packages("rgee")
+install.packages("reticulate")
+#Additionally, rgee depends on the Python packages: numpy and ee. To install them:
+library(rgee)
+rgee::ee_install()
+#The process will ask you twice if you want to continue, just say Yes.
+#IMPORTANT: at the last step, it ask you if you want to start a new session: if you are using Windows, ignore that and close RStudio, saving your workspace.
+
+#Check that it is ok:
+ee_check()
+#I generally get the issue: earthengine-api not installed
+#check the Renviron
+install.packages("usethis")
+library(usethis)
+usethis::edit_r_environ()
+#Which gets me this:
+#EARTHENGINE_INIT_MESSAGE="True"
+#EARTHENGINE_PYTHON="C:\Users\bsent\AppData\Local\r-miniconda\envs\rgee/python.exe"
+#EARTHENGINE_ENV="rgee"
+
+#the stuf that at some point worked
+#PATH="${RTOOLS40_HOME}\usr\bin;${PATH}"
+#EARTHENGINE_PYTHON="C:\Users\bsent\miniconda3\envs\rgee_py/python.exe"
+#EARTHENGINE_ENV="rgee_py"
+#EARTHENGINE_INIT_MESSAGE="True"
+
+#If I search for "python.exe" in my "bioecosystem" folder, I get:
+#"D:\ZAnalysis\bioecosystem\renv\python\r-reticulate\python.exe"
+
+#Try installing manually
+py_install( "earthengine-api==0.1.277", "D:/ZAnalysis/bioecosystem/renv/library/R-4.2/x86_64-w64-mingw32/rgee")
+#Restart
+ee_check()
+
+install_miniconda()
+#Error: Miniconda is already installed at path "C:/Users/bsent/AppData/Local/r-miniconda"
+# 3. Set your miniconda Python Env
+use_python("C:/Users/bsent/AppData/Local/r-miniconda")
+# 4. Run ee_install()
+ee_install()
+
+#Maybe ee_install() default is not in my project
+ee_install(py_env = "D:/ZAnalysis/bioecosystem/renv/library/R-4.2/x86_64-w64-mingw32/rgee",
+           #py_env = "rgee", 
+           #The name, or full path, of the Python environment to be used; so should I use
+           #D:\ZAnalysis\bioecosystem\renv\library\R-4.2\x86_64-w64-mingw32\rgee
+           earthengine_version = ee_version(), 
+           python_version = "3.8", 
+           confirm = interactive()
+           )
+#This gets me this:
+#rgee::ee_install want to store the environment variables: EARTHENGINE_PYTHON 
+#and EARTHENGINE_ENV in your .Renviron file to use the Python path:
+#D:/ZAnalysis/bioecosystem/renv/library/R-4.2/x86_64-w64-mingw32/rgee/python.exe in future sessions.
+
+#OT THIS??
+win_py_path = paste0("C:/Users/bsent/AppData/Local/r-miniconda/envs/rgee/", "python.exe")
+  
+ee_install_set_pyenv(
+  py_path = win_py_path,
+  py_env = NULL,#"D:\ZAnalysis\bioecosystem\renv\library\R-4.2\x86_64-w64-mingw32\rgee"
+  Renviron = "local",
+  confirm = interactive(),
+  quiet = FALSE)
+#"C:/Users/UNICORN/AppData/Local/r-miniconda/envs/rgee/python.exe"
+
+py_path = win_py_path,
+#   py_env = "rgee" # Change it for your own Python ENV
+# )
+
+
+#Instal a fresh up-to-date version of R, then RStudio
+#See in RStudio - Tools - Global options: the path to R in Program files
+#In the subfolder /library/base/R, open in text editor the file 'Rprofile' and add at the bottom of it these 3 lines
+#https://www.accelebrate.com/library/how-to-articles/r-rstudio-library
+myPaths <- .libPaths()   # get the paths
+myPaths <- c(myPaths[2], myPaths[1])  # switch them
+.libPaths(myPaths)  # reassign them
+#Now the default library is in the Global environment: Restart RStudio 'as Administrator' (in Start menu, left clik - Run as Admin)
+#To check my R Home directory
+R.home(component = "home")
+
+#Edit file ~/.Renviron, add
+R_LIBS_USER=/some/path #Next time RStudio starts, it will create directories in /some/path instead of ~/R.
+usethis::edit_r_environ()
+#I see thus:
+EARTHENGINE_INIT_MESSAGE="True"
+EARTHENGINE_PYTHON="C:\Users\bsent\AppData\Local\r-miniconda\envs\rgee/python.exe"
+EARTHENGINE_ENV="rgee"
+
+py_install( "earthengine-api==0.1.277", "rgee")
+
+C:/Users/bsent/AppData/Local/r-miniconda/envs/r-reticulate/python.exe
+Creating a Python Environment (rgee)
++ "C:/Users/bsent/AppData/Local/r-miniconda/condabin/conda.bat" "create" "--yes" "--name" "rgee" "python=3.8" "--quiet" "-c" "conda-forge"
+environment location: C:\Users\bsent\AppData\Local\R-MINI~1\envs\rgee
+
+rgee::ee_install want to store the environment variables: EARTHENGINE_PYTHON 
+and EARTHENGINE_ENV in your .Renviron file to use the Python path:
+C:\Users\bsent\AppData\Local\r-miniconda\envs\rgee/python.exe in future sessions.
+
+ee_install_set_pyenv(
+  py_path,
+  py_env = NULL,
+  Renviron = "global",
+  confirm = interactive(),
+  quiet = FALSE
+)
+
+Sys.which("python")   # system default: "C:\\Users\\bsent\\AppData\\Local\\R-MINI~1\\envs\\R-RETI~1\\python.exe"
+Sys.which("python3")  # is a V3 installed?: "C:\\Users\\bsent\\AppData\\Local\\MICROS~1\\WINDOW~1\\python3.exe"
+use_python(Sys.which("python3"))  # use it
+#gives me: Error in use_python(Sys.which("python3")) : 
+  #Specified version of python 'C:\Users\bsent\AppData\Local\MICROS~1\WINDOW~1\python3.exe' does not exist.
+
+#So I search Explorer for python3.exe
+"C:\Users\bsent\AppData\Local\Microsoft\WindowsApps\python3.exe"
+"C:\Users\bsent\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\python3.exe"
+"C:\Users\bsent\AppData\Local\Microsoft\WindowsApps\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\python3.exe"
+
+"C:\Users\bsent\AppData\Local\r-miniconda\envs\rgee\Lib\site-packages\earthengine_api-0.1.321.dist-info"
+
+#So I try 
+use_python("C:\Users\bsent\AppData\Local\Microsoft\WindowsApps\python3.exe")
+
+
+libpaths()
+
+win_py_path = paste0("C:/Users/bsent/AppData/Local/r-miniconda/envs/rgee/", "python.exe")
+ee_install_set_pyenv(py_path = win_py_path, py_env = "rgee") # Change it for your own Python ENV
+
+
+    #C:\Users\bsent\AppData\Local\R-MINI~1
+                         #C:\Users\bsent\AppData\Local\R-MINI~1\envs\r-reticulate
+                         #C:\Users\bsent\AppData\Local\R-MINI~1\envs\rgee
+                         #C:\Users\bsent\AppData\Local\r-miniconda\envs\rgee
+#base                     #C:\Users\bsent\miniconda3
+#rgee_py               *  #C:\Users\bsent\miniconda3\envs\rgee_py
+                         #D:\ZAnalysis\bioecosystem\renv\python\r-reticulate
+
+conda create --name ee
+conda activate ee
+conda install -c conda-forge earthengine-api
+
+```
+
+For easier installation of rgee on Windows check this: https://www.youtube.com/watch?v=1-k6wNL2hlo
+not so much this: http://www.css.cornell.edu/faculty/dgr2/_static/files/R_html/ex_rgee.html
+

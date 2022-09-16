@@ -1,0 +1,5 @@
+#PATH="${RTOOLS40_HOME}\usr\bin;${PATH}"
+EARTHENGINE_INIT_MESSAGE="True"
+RETICULATE_PYTHON="C:\Users\bsent\miniconda3\envs\rgee_py\python.exe"
+EARTHENGINE_PYTHON="C:\Users\bsent\miniconda3\envs\rgee_py\python.exe"
+EARTHENGINE_ENV="rgee_py"
