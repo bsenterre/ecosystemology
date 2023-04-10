@@ -1,0 +1,193 @@
+---
+title: "Ecosystemology: 1. Get the dataset from the BIO database and export to Zenodo or GBIF"
+author: "Bruno Senterre (bsenterre@gmail.com)"
+date: "15/09/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, include = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Introduction
+This script imports the ecosystemology dataset from BIO and manipulates it for publication on Zenodo. In the version 1.0, we had done this via publication on GBIF.
+
+# Load libraries
+```{r}
+#install.packages("pacman")
+library(pacman) #To check packages that are missing, install and load 'library()'
+p_load(RODBC, dplyr, lubridate, splitstackshape, data.table)
+```
+
+# Load the ecosystem dataset from BIO
+After improving BIO exports to GBIF, and finding out about RODBC, I might simply keep my queries in Bio.accdb as they are, and compile more stuff here, connecting to those queries (which, unlike my queries used in the GBIF dataset 'seychecklist', can be read without having to export to a transit database: Bio_users.accdb).
+I am also adding connection to the Access table 'zimp_geohab' and 'co_geohab' to get more ecosystem characters fields (ecoChars).
+This script needs to be run by a database administrator of the BIO database, i.e. you need to have the file Bio.accdb.
+
+```{r}
+### Define the path where the database is located (absolute or relative)
+db <- "D:/Database/Bio/KBA/Bio.accdb"
+### Connect to the database
+condb <- RODBC::odbcConnectAccess2007(db)
+### List of tables and views (i.e. queries) present in the database
+#x <- RODBC::sqlTables(condb)
+
+## ecosystemology dataset
+ecosystemologyOccurrences <- RODBC::sqlFetch(condb, "GBIFExport_OccurrencesEcosystem") 
+ecosystemologyIdentificationHistory_fct <- RODBC::sqlFetch(condb, "GBIFExport_OccurrencesEcosystemIdentificationHistory_fct") 
+ecosystemologyIdentificationHistory_fctForis <- RODBC::sqlFetch(condb, "GBIFExport_OccurrencesEcosystemIdentificationHistory_fctForis")
+
+# See my ecosystemology script on how I manipulated to create the GBIF txt files from the above
+ED <- ecosystemologyOccurrences
+ED <- ED %>% dplyr::select(-filter, -fieldNotes_currentDeterminavit)
+
+#I cannot get Eident at once from Access because of the impossibility to not truncate memo fields when exporting UNION ALL queries (or queries with GROUP_BY etc)
+#So I have to combine in R the 2 different BIO exports for Eident
+Eident_fct1 = ecosystemologyIdentificationHistory_fct
+Eident_fct1$dateIdentified <- lubridate::as_date(Eident_fct1$dateIdentified)
+Eident_fct1$identificationID <- as.character(Eident_fct1$identificationID)
+#Eident_fct1$dateIdentified <- lubridate::as_date(Eident_fct1$dateIdentified)
+Eident_fct2 = ecosystemologyIdentificationHistory_fctForis
+Eident_fct2$dateIdentified <- lubridate::as_date(Eident_fct2$dateIdentified)
+Eident_fct2$identificationID <- as.character(Eident_fct2$identificationID)
+Eident <- rbind(Eident_fct1, Eident_fct2)
+
+#Replace the MS Access 'taxonRemarks' (truncated at 255 because access cannot concatenate on memo fields)
+Eident <- Eident %>% dplyr::select(-taxonRemarks)
+Eident$taxonRemarks <- paste0(Eident$lifeZoneID,"|",Eident$lifeZone,"|",Eident$ecoOrderID,"|",Eident$ecoOrder,"|",Eident$ecoFamilyID,"|",Eident$ecoFamily,"|",Eident$ecoGenusID,"|",Eident$ecoGenus,"|",Eident$ecoSpeciesID,"|",Eident$ecoSpecies,"|",Eident$ecoSpeciesTranslated)
+
+#OK This works: so I can get ED and Eident right here without having to export from Bio.accdb to Bio_users.accdb. And therefore, I also call other Bio.accdb objects here and enrich the 2 created tables.
+
+#Check on memo fields in ED (why habitat is not truncated ... I don't know ...?)
+apply(ED,2,function(x) max(nchar(x,keepNA = FALSE)))
+
+#Get co_geohab and zimp_geohab for the additional fields on ecosystem characters
+#coastal, tidal_infl, coastal_expo, waterlogging, saxicolous, lithology, topo_wetness, dynamics, disturb1, formation_climax, life_form, formation_actu
+EDchars <- RODBC::sqlFetch(condb, "xgeohab_chars")
+#And get the same for ecoGenus
+ecoGechars <- RODBC::sqlFetch(condb, "bs_hab_ge_chars")
+
+#Get the ecoGe, ecoFa and ecoOr : ecosystemology backbone
+lifeZone <- RODBC::sqlFetch(condb, "bs_life_zone")
+ecoGe <- RODBC::sqlFetch(condb, "bs_hab_ge")
+ecoFa <- RODBC::sqlFetch(condb, "bs_hab_fa")
+ecoOr <- RODBC::sqlFetch(condb, "bs_hab_or")
+
+#Get the IUCN 2.1 and its BIO alternative ecosystem systematic backbone
+IUCN_L3 <- RODBC::sqlFetch(condb, "bs_IUCN_L3")
+IUCNL3BIOCrossover <- RODBC::sqlFetch(condb, "bs_BIO_L2_IUCN_L3_crossover")
+BIO_L2 <- RODBC::sqlFetch(condb, "bs_BIO_L2")
+BIO_L3 <- RODBC::sqlFetch(condb, "bs_BIO_L3")
+BIO_L4 <- RODBC::sqlFetch(condb, "bs_BIO_L4")
+
+#Get the complete list of ecosystem species names and their metadata
+ecoSp <- RODBC::sqlFetch(condb, "bs_hab_sp")
+ecoSpMeta <- RODBC::sqlFetch(condb, "bs_hab_sp_meta")
+ecoSpMeta2 <- RODBC::sqlFetch(condb, "Ecosystemic_tree_of_life_2023")
+bs_person <- RODBC::sqlFetch(condb, "bs_person") #To allow building ecoSpPub
+
+#Close the connection to the MS Access database file
+RODBC::odbcClose(condb)
+
+#The created objects are: ED, Eident, EDchars, ecoGechars, ecoGe, ecoFa, ecoOr
+#+ IUCN_L3, BIO_L3, BIO_L4, ecoSp, ecoSpMeta 
+```
+
+# Manipulate a bit ED to enrich it with nplots
+For this I cannot use GBIF dataset 'seyvegplot' (225 plots in v1.2)! (because the published GBIF dataset is filtered to Seychelles, so far): SEE LINE 138 IMPORTING IT FROM BIO
+In fact, from Bio_user.accdb (because not working from Bio directly)
+```{r}
+db <- "D:/Database/Bio/Bio_user.accdb"
+condb <- RODBC::odbcConnectAccess2007(db)
+#x <- RODBC::sqlTables(condb)
+event <- RODBC::sqlFetch(condb, "GBIFExport_Event")
+#event <- RODBC::sqlFetch(condb, "GBIFExport_EventOccurrences")
+RODBC::odbcClose(condb)
+
+#Link vegetation plot data and stand ecosystemology data
+#Get the georef_key skeezed within the field eventRemarks
+event <- splitstackshape::cSplit(event, "eventRemarks", "|", type.convert=FALSE)
+event <- dplyr::rename(event, ecoOccurrenceID = eventRemarks_1, eventRemarks = eventRemarks_2)
+
+## Get stands data (the 16000 ED) added with attribute on number of plots
+#Get a unique list of stands subject to plots with the number of plots done: 367 stands
+eventStands <- event %>% dplyr::group_by(ecoOccurrenceID) %>% dplyr::summarize(nplots = n())
+```
+
+# Export a clean copy of all objects for publication in Zenodo
+At some point, I should have all these as direct export from BIO, in replacement of GBIF exports, and including all fields (e.g. in ecoGenus, but not the IDs for the code lists (cl_))
+All these objects are exported to the Github subdirectory 'datainput', which will be read by the script 'bioEcosystemology' that is used to then produce the objects needed as input for the Shiny app (then exported to the forlder /app/ecosystemology/datainput/)
+```{r}
+#ED
+#Split/recover the information squeezed in fieldNotes
+EDPub <- splitstackshape::cSplit(ED, "fieldNotes", "|", type.convert=FALSE)
+EDPub <- dplyr::rename(EDPub, ecoFunctional = fieldNotes_1, degreeOfInvasion = fieldNotes_2, ecoNaturalness = fieldNotes_3, ecoStage = fieldNotes_4)
+EDPub <- EDPub %>% rename(ecoOccurrenceID = occurrenceID)
+#Add the nplots data
+EDPub <- left_join(EDPub, eventStands %>% dplyr::select(ecoOccurrenceID, nplots), by = "ecoOccurrenceID")
+#Replace all NA values by "0"
+EDPub[is.na(EDPub$nplots),]$nplots <- 0
+data.table::fwrite(setDT(EDPub), file = "datainput/ecoOccurrences.txt", append = FALSE, quote = TRUE, sep = "\t")
+
+#Eident
+#Split identificationReference
+EidentPub <- splitstackshape::cSplit(Eident, "identificationReference", "|", type.convert=FALSE)
+EidentPub <- dplyr::rename(EidentPub, identificationReference = identificationReference_1, identificationReferencePage = identificationReference_2, identificationReferenceID = identificationReference_3)
+#Split identificationRemarks
+EidentPub <- splitstackshape::cSplit(EidentPub, "identificationRemarks", "|", type.convert=FALSE)
+EidentPub <- dplyr::rename(EidentPub, biotypeStatus = identificationRemarks_1, identificationRemarks = identificationRemarks_2)
+EidentPub <- EidentPub %>% rename(ecoOccurrenceID = occurrenceID) %>% dplyr::select(-kingdom)
+#taxonRemaks is already split from BIO
+data.table::fwrite(setDT(EidentPub), file = "datainput/ecoIdentifications.txt", append = FALSE, quote = TRUE, sep = "\t")
+
+#ecoSp
+ecoSpPub <- ecoSp %>% rename(ecoSpeciesID = hab_sp_id, ecoSpecies = hab_sp, ecoSpeciesTranslated = hab_sp_translated, ecoSpeciesReference = biblio, ecoSpeciesReferencePage = biblio_pp, ecoSpeciesReferenceID = biblio_id, ecoSpeciesAuthorID = hab_sp_author, ecoSpeciesDate = hab_sp_date, ecoSpeciesBiotype = hab_sp_type)
+bs_person$fullName <- paste0(
+  bs_person$surname,
+  ifelse(nchar(bs_person$first_name)>0 & !is.na(bs_person$first_name), paste0(", ",bs_person$first_name), "")
+)
+ecoSpPub <- left_join(ecoSpPub, bs_person %>% dplyr::select(person_id, fullName) %>% rename(ecoSpeciesAuthorID = person_id, ecoSpeciesAuthor = fullName), by = "ecoSpeciesAuthorID")
+ecoSpPub <- ecoSpPub %>% dplyr::select(-IUCN_L3, -BIO_L4, -life_zone, -hab_ge, -sp_diag, -life_form, -foliage_type, -foliage_texture, -thorn, -description)
+data.table::fwrite(setDT(ecoSpPub), file = "datainput/ecoSpecies.txt", append = FALSE, quote = TRUE, sep = "\t")
+
+#ecoSpMeta
+#renaming from BIO "_" style naming to the firstLetterCapital GBIF style
+ecoSpMetaPub <- ecoSpMeta %>% rename(ecoSpeciesProfilesID = hab_sp_meta_id, ecoSpeciesID = hab_sp_id, IUCNL3ID = IUCN_L3, BIOL4ID = BIO_L4, lifeZoneID = life_zone, ecoGenusID = hab_ge, ecoSpeciesDescription = hab_sp_description, ecoSpeciesBiota = sp_diag, ecoSpeciesDistribution = distribution, ecoSpeciesDistributionRasterName = distribution_raster_name, ecoSpeciesDistributionRasterValue = distribution_raster_value, RLEStatus = RLE_status, RLENotes = RLE_notes, ecotaxonomicNotes = ecotaxonomic_notes, ecoSpeciesProfilesReferenceID = hab_sp_meta_biblio_id, ecoSpeciesProfilesReference = hab_sp_meta_biblio, ecoSpeciesProfilesReferencePage = hab_sp_meta_biblio_pp, ecoSpeciesProfilesReferenceAuthorID = hab_sp_meta_author, ecoSpeciesProfilesReferenceDate = hab_sp_meta_date)
+ecoSpMetaPub <- left_join(ecoSpMetaPub, bs_person %>% dplyr::select(person_id, fullName) %>% rename(ecoSpeciesProfilesReferenceAuthorID = person_id, ecoSpeciesProfilesReferenceAuthor = fullName), by = "ecoSpeciesProfilesReferenceAuthorID")
+#Remove fields that should be renamed and replace by the text in place of the ID
+ecoSpMetaPub <- ecoSpMetaPub %>% dplyr::select(-synonymy_notes, -life_form, -foliage_type, -foliage_texture, -thorn)
+data.table::fwrite(setDT(ecoSpMetaPub), file = "datainput/ecoSpeciesProfiles.txt", append = FALSE, quote = TRUE, sep = "\t")
+
+#lifeZone <- unique(EidentPub %>% dplyr::select(lifeZoneID, lifeZone) %>% dplyr::filter(!is.na(lifeZoneID)))
+lifeZone <- lifeZone %>% rename(lifeZoneID = life_zone_id, lifeZone = life_zone, lifeZoneTemperatureID = life_zone_temp, lifeZoneWetnessID = life_zone_wetness) %>% dplyr::select(lifeZoneID, lifeZone, lifeZoneTemperatureID, lifeZoneWetnessID)
+data.table::fwrite(setDT(lifeZone), file = "datainput/lifeZone.txt", append = FALSE, quote = TRUE, sep = "\t")
+
+ecoGenus <- ecoGe %>% dplyr::select(hab_ge_id, ordering, hab_ge, hab_fa, description) %>% rename(ecoGenusID = hab_ge_id, ecoGenusOrdering = ordering, ecoGenus = hab_ge, ecoFamilyID = hab_fa, ecoGenusDescription = description)
+ecoGenus <- left_join(ecoGenus, ecoGechars %>% rename(ecoGenusID = hab_ge_id), by = "ecoGenusID")
+data.table::fwrite(setDT(ecoGenus), file = "datainput/ecoGenus.txt", append = FALSE, quote = TRUE, sep = "\t")
+
+ecoFamily <- ecoFa %>% rename(ecoFamilyID = hab_fa_id, ecoFamily = hab_fa, ecoFamilyDescription = description, ecoOrderID = hab_or)
+data.table::fwrite(setDT(ecoFamily), file = "datainput/ecoFamily.txt", append = FALSE, quote = TRUE, sep = "\t")
+
+ecoOrder <- ecoOr %>% rename(ecoOrderID = hab_or_id, ecoOrder = hab_or, ecoOrderDescription = description)
+data.table::fwrite(setDT(ecoOrder), file = "datainput/ecoOrder.txt", append = FALSE, quote = TRUE, sep = "\t")
+
+data.table::fwrite(setDT(IUCN_L3 %>% rename(IUCNL3ID = IUCN_L3_id, IUCNL3 = IUCN_L3_eco_functional_group, IUCNL2ID = IUCN_L2_id, IUCNL2 = IUCN_L2_functional_biome, IUCNL1ID = IUCN_L1_id, IUCNL1 = IUCN_L1_realm, IUCNL3Ordering = IUCN_ordering)), file = "datainput/IUCNL3.txt", append = FALSE, quote = TRUE, sep = "\t")
+
+data.table::fwrite(setDT(IUCNL3BIOCrossover %>% rename(BIOL2Ordering = BIOL12_ordering, BIOL2ID = BIO_L2_id, L2CI = 3, L2UW = 4, L2Ph = 5, L2T = 6, IUCNL3ID = IUCN_L3_id, IUCNL3Notes = IUCN_L3_notes)), file = "datainput/IUCNL3BIOCrossover.txt", append = FALSE, quote = TRUE, sep = "\t")
+
+data.table::fwrite(setDT(BIO_L2 %>% rename(BIOL2ID = BIO_L2_id, BIOL2 = BIO_L2_systematic_functional_biome, BIOL1ID = BIO_L1_id, BIOL1 = BIO_L1_realm, BIOL2Ordering = BIO_L2_ordering)), file = "datainput/BIOL2.txt", append = FALSE, quote = TRUE, sep = "\t")
+
+data.table::fwrite(setDT(BIO_L3 %>% rename(BIOL3ID = BIO_L3_id, BIOL3 = BIO_L3_systematic_functional_group, BIOL2ID = BIO_L2_id, BIOL3Ordering = BIO_L3_ordering)), file = "datainput/BIOL3.txt", append = FALSE, quote = TRUE, sep = "\t")
+
+data.table::fwrite(setDT(BIO_L4 %>% rename(BIOL4ID = BIO_L4_id, BIOL4 = BIO_L4_systematic_global_ecosystem, BIOL3ID = BIO_L3_id, IUCNL3ID = IUCN_L3_id, BIOL4Notes = BIO_L4_notes, BIOL4Ordering = BIO_L4_ordering) %>% dplyr:: select(BIOL4ID, BIOL4, BIOL3ID, IUCNL3ID, BIOL4Notes, BIOL4Ordering)), file = "datainput/BIOL4.txt", append = FALSE, quote = TRUE, sep = "\t")
+
+#data.table::fwrite(setDT(ecoSpMeta), file = "ecoSpMeta.txt", append = FALSE, quote = TRUE, sep = "\t")
+#data.table::fwrite(setDT(ecoSpMeta2), file = "ecoSpMeta2.txt", append = FALSE, quote = TRUE, sep = "\t")
+```
+
+# Add in the datainput folder other input data (e.g. some GIS basemaps)
+```{r}
+
+```
+

@@ -1,0 +1,1180 @@
+---
+title: "Ecosystemology: 2. From the published dataset (GBIF-Zenodo-EE) to the Shiny app input"
+author: "Bruno Senterre (bsenterre@gmail.com)"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document:
+    number_sections: true
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, include = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Introduction
+In this script, we develop a case study showing how exactly we are implementing principles of 'ecosystemology', i.e. a 'taxonomy of ecosystems', as explained in Senterre et al. (2021: https://doi.org/10.1016/j.ecocom.2021.100945). We use Zenodo (GBIF in version 1.0) to publish our ecosystem raw dataset, and we retrieve here those data to build an ecosystem checklist, as presented in the corresponding publications (see http://dx.doi.org/10.13140/RG.2.2.17934.89924), accompanied by other ecosystem occurrence data from the same reports.
+
+We then show how to gather more ecosystem distribution data from GIS maps published on Google Earth Engine and Zenodo, and how to make those data available for a Shiny app that would interactively allow users to pick an ecosystem from a list and see the corresponding distribution map and the main metrics used in Red Listing of Ecosystems.
+
+Finally, the key data compiled are exported to a subfolder called 'ecosystemology' which contains another script used to create a shiny app for an easy access and interaction of users with the results of eco-taxonomic studies.
+
+Note that this is a work in progress. The author is still basically a novice in R, so the code is surely not very elegant and I sometimes have difficulties with formats etc., but it does the job ultimately. Any help or advice on how to improve the script will be very much appreciated.
+
+# Preliminary note on installation and setting
+In the Earth Engine part of this script we will be using rgee with Google Earth Engine, and this requires having a very specific .Renviron file that remains unaffected by other scripts editing to .Renviron. Therefore, the best is simply to isolate this script (for all the R functionalities running in the back) and to do that using a specific RStudio Project, using its own folder (ecosystemologyLocalVersion) in my R general folder (D:/ZAnalysis) AND taking the option 'using renv' which is a package that ensure this isolation is well done: see https://rstudio.github.io/renv/
+
+Once created a project in that way, if you try Tools - Install packages, you will notice that the default library repository has become a repository within your project folder.
+
+Therefore, when it is needed to run the Earth engine section of this script, it is necessary to run this script (a copy of it) from that particular environment and from within the R project created there.
+
+
+# Load libraries
+```{r}
+library(pacman)
+p_load(data.table, DT, dplyr, stringr, sjmisc, units,
+       raster, terra, tidyterra,
+       sf, mapview, leaflet,
+       redlistr)
+```
+
+#Load input data
+Load BIO eco-taxonomic data as exported from BIO to Zenodo: see script bioExport.Rmd
+```{r}
+ED = data.table::fread("datainput/ecoOccurrences.txt", header = TRUE, sep = "\t")
+Eident = data.table::fread("datainput/ecoIdentifications.txt", header = TRUE, sep = "\t")
+Eident$ecoSpeciesID <- as.character(Eident$ecoSpeciesID)
+ecoSp = data.table::fread("datainput/ecoSpecies.txt", header = TRUE, sep = "\t")
+ecoSp$ecoSpeciesID <- as.character(ecoSp$ecoSpeciesID)
+ecoSpProf = data.table::fread("datainput/ecoSpeciesProfiles.txt", header = TRUE, sep = "\t")
+ecoSpProf$ecoSpeciesID <- as.character(ecoSpProf$ecoSpeciesID)
+#lifeZone <- unique(Eident %>% dplyr::select(lifeZoneID, lifeZone) %>% dplyr::filter(!is.na(lifeZoneID)))
+lifeZone = data.table::fread("datainput/lifeZone.txt", header = TRUE, sep = "\t")
+ecoGe = data.table::fread("datainput/ecoGenus.txt", header = TRUE, sep = "\t")
+ecoFa = data.table::fread("datainput/ecoFamily.txt", header = TRUE, sep = "\t")
+ecoOr = data.table::fread("datainput/ecoOrder.txt", header = TRUE, sep = "\t")
+
+IUCNL3 = data.table::fread("datainput/IUCNL3.txt", header = TRUE, sep = "\t")
+BIOL2 = data.table::fread("datainput/BIOL2.txt", header = TRUE, sep = "\t")
+BIOL3 = data.table::fread("datainput/BIOL3.txt", header = TRUE, sep = "\t")
+BIOL4 = data.table::fread("datainput/BIOL4.txt", header = TRUE, sep = "\t")
+
+
+#Get the Eident and ecoSpecies enriched with nameTranslated
+#Get the English name and the French name in their respective columns (could not make it work with stringr::str_detect or grepl)
+isEN <- function(input) {if(sjmisc::str_contains(input, " (EN)")) {return(input)} else {return("")}}
+Eident$ENo <- sapply(Eident$ecoSpecies, FUN = isEN)
+Eident$ENt <- sapply(Eident$ecoSpeciesTranslated, FUN = isEN)
+Eident$ecoSpeciesEN <- paste0(Eident$ENo, Eident$ENt)
+isFR <- function(input) {if(sjmisc::str_contains(input, " (FR)")) {return(input)} else {return("")}}
+Eident$FRo <- sapply(Eident$ecoSpecies, FUN = isFR)
+Eident$FRt <- sapply(Eident$ecoSpeciesTranslated, FUN = isFR)
+Eident$ecoSpeciesFR <- paste0(Eident$FRo, Eident$FRt)
+Eident <- Eident[,!c("ENo", "ENt", "FRo", "FRt")]
+#Add a name that is preferably EN but if not available then take the FR name
+Eident$ecoSpeciesENFR <- ifelse(nchar(Eident$ecoSpeciesEN) >0, Eident$ecoSpeciesEN, Eident$ecoSpeciesFR)
+
+#Same with ecoSp
+ecoSp$ENo <- sapply(ecoSp$ecoSpecies, FUN = isEN)
+ecoSp$ENt <- sapply(ecoSp$ecoSpeciesTranslated, FUN = isEN)
+ecoSp$ecoSpeciesEN <- paste0(ecoSp$ENo, ecoSp$ENt)
+ecoSp$FRo <- sapply(ecoSp$ecoSpecies, FUN = isFR)
+ecoSp$FRt <- sapply(ecoSp$ecoSpeciesTranslated, FUN = isFR)
+ecoSp$ecoSpeciesFR <- paste0(ecoSp$FRo, ecoSp$FRt)
+ecoSp <- ecoSp[,!c("ENo", "ENt", "FRo", "FRt")]
+#Add a name that is preferably EN but if not available then take the FR name
+ecoSp$ecoSpeciesENFR <- ifelse(nchar(ecoSp$ecoSpeciesEN) >0, ecoSp$ecoSpeciesEN, ecoSp$ecoSpeciesFR)
+```
+
+# Ecosystemology: compiling the ecosystem taxonomy, accepted names and synonymies
+
+## Get the currently valid eco-determinavit for each stand
+The eco-determinavit table Eident contains 980 eco-determinavits of which 838 are active.
+lastEident provides the 838 active Eident (is a variant of Eident as the complete eco-determinavit history table)
+```{r}
+#a First get the last ecoSpecies identification for any Stand: 242 rows
+lastEident <- Eident %>% group_by(ecoOccurrenceID) %>% dplyr::summarize(lastDate = max(dateIdentified))
+#700 lastEident
+length(unique(lastEident$ecoOccurrenceID)) #Also 838 so no duplicate occurrenceID
+
+#b create a link based on combinations of occurrenceID and dateIdentified to get the last identificationID Eident
+lastEident$linktmp <- paste0(lastEident$ecoOccurrenceID,lastEident$lastDate)
+#Get the same link for Eident
+Eidenttmp <- Eident %>% mutate(linktmp = paste0(Eident$ecoOccurrenceID,Eident$dateIdentified))
+#Not sure I need this: Eident$checkLink <- 1
+#Recover the Eident table but just for currently active eco-determinavits
+lastEident <- left_join(lastEident,Eidenttmp[,!c("ecoOccurrenceID")], by = "linktmp") %>% dplyr::select(-lastDate, -linktmp)
+#xx <- lastEident[is.na(lastEident$checkLink),]#To check that all links worked
+
+#Save a copy txt
+#data.table::fwrite(lastEident, file = paste0(getwd(), "/bioecosystemShiny/lastEident.txt"), append = FALSE, quote = TRUE, sep = "\t")
+```
+
+## Get a systematic list of all currently accepted ecoSpecies and their biotype
+89 accepted ecoSpecies + 69 nomen nudum = 158
+```{r}
+#Number of published ecoSpecies names (eco-determinavit active or not): 203
+biotypeList <- Eident[Eident$biotypeStatus == "holobiotype",]
+
+#Number of active Eident that define a biotype, i.e. accepted ecoSpecies: 89
+ecoSpeciesList <- lastEident[lastEident$biotypeStatus == "holobiotype",]
+
+#Add nomen nudum: ecoSpecies from ecoSp table without a biotype (Added on Jan 2023): Nomen Nudum cannot have synonymy defined and are therefore 'accepted' names that cannot be obtained from the ED occurrences data.
+#Get list of nomen nudum from ecoSp: 69 names (Seychelles)
+nomenNudum <- ecoSp %>% dplyr::filter(is.na(ecoSpeciesBiotype) | nchar(ecoSpeciesBiotype) == 0)
+
+#Compile a list of all accepted names + nomen nudum = 158 names
+ecoSpeciesListAll <- rbind(ecoSpeciesList %>% dplyr::select(ecoSpeciesID, ecoSpecies) %>% mutate(nomenclaturalStatus = "aa-Active Valid"), nomenNudum %>% dplyr::select(ecoSpeciesID, ecoSpecies) %>% mutate(nomenclaturalStatus = "ab-Nomen nudum"))
+ecoSpeciesListAll <- left_join(ecoSpeciesListAll, ecoSp %>% dplyr::select(-ecoSpecies), by = "ecoSpeciesID")
+
+#Get the basic ecoSpeciesProfiles to organize systematically
+ecoSpProfProto <- ecoSpProf %>% dplyr::filter(isProtologue == 1)
+ecoSpeciesListAll <- left_join(ecoSpeciesListAll, ecoSpProfProto, by = "ecoSpeciesID")
+ecoSpeciesListAll <- left_join(ecoSpeciesListAll, lifeZone, by = "lifeZoneID")
+ecoSpeciesListAll <- left_join(ecoSpeciesListAll, ecoGe, by = "ecoGenusID")
+ecoSpeciesListAll <- left_join(ecoSpeciesListAll, ecoFa, by = "ecoFamilyID")
+ecoSpeciesListAll <- left_join(ecoSpeciesListAll, ecoOr, by = "ecoOrderID")
+ecoSpeciesListAll <- left_join(ecoSpeciesListAll, IUCNL3, by = "IUCNL3ID")
+ecoSpeciesListAll <- left_join(ecoSpeciesListAll, BIOL4 %>% dplyr::select(-IUCNL3ID), by = "BIOL4ID")
+
+#Get the biotype information
+ecoSpeciesListAll <- left_join(ecoSpeciesListAll, ED %>% dplyr::select(ecoOccurrenceID, recordedBy, recordNumber) %>% rename(ecoSpeciesBiotype = ecoOccurrenceID) %>% mutate(ecoSpeciesBiotypeTxt = paste0(recordedBy, " ", recordNumber)) %>% dplyr::select(-recordedBy, -recordNumber), by = "ecoSpeciesBiotype")
+
+#Print a systematic table of all accepted ecoSpecies + nomen nudum
+ecoSpeciesListAllDT <- ecoSpeciesListAll %>% dplyr::select(BIOL4ID, IUCNL3ID, lifeZone, ecoGenus, ecoSpecies, ecoSpeciesReference, ecoSpeciesID, BIOL4Ordering)
+
+ecoSpeciesListAllDT <- with(ecoSpeciesListAllDT, ecoSpeciesListAllDT[order(BIOL4Ordering,lifeZone, ecoGenus, ecoSpeciesID) , ])
+
+DT::datatable(ecoSpeciesListAllDT[,1:7])#, 
+                #Custom column names
+                #colnames = c('Here', 'Are', 'Some', 'New', 'Names'),
+                #colnames = c('Another Better Name' = 2, 'Yet Another Name' = 4)
+                #Sort/Order columns (first columns is n°0)
+                #options = list(
+                  #order = list(list(2, 'asc'), list(4, 'desc'))
+                 # )
+              #)
+              
+           #   [,c("ecoOrder", "ecoFamily", "ecoGenus", "lifeZone", "ecoSpecies", "identifiedBy", "dateIdentified", "identificationReference",  "identificationReferencePage", "recordedBy", "recordNumber", "eventDate", "country", "ecoSpeciesID")])
+```
+
+## Get the list of all published names and their currently accepted name (synonymies)
+In my first version of the script I had started from the angle of Eident (since I was using GBIF with only the tables ED and Eident). But since I am now shifting to Zenodo with the complete ecosystemology dataset, and since I want to be able to handle nomen nudum, I am now using the same approach to finding out synonymies but starting from the table of ecoSp.
+For each ecoSp, if nomen nudum then synof refers to self ecoSpeciesID, otherwize, we look at the lastEident for the biotype of the name, and we use a loop in case synonymies are not completely recorded.
+Check that all active determinavit (lastEident) are referring to a name that is currently accepted, i.e. that is one of the 88 ecoSpeciesList
+```{r}
+#For all ecoSp names, get the lastEident ecoSpecies for the biotype of the name
+ecoSp2 <- left_join(ecoSp, lastEident %>% dplyr::select(ecoOccurrenceID, ecoSpeciesID, ecoSpecies) %>% rename(ecoSpeciesBiotype = ecoOccurrenceID, synof_ecoSpeciesID = ecoSpeciesID, synof_ecoSpecies = ecoSpecies), by = "ecoSpeciesBiotype")
+
+#Update the values for all nomen nudum: synof referring to themselves
+#Recover the same fields for Nomen nudum, i.e. ecoSpeciesFinal = ecoSpecies and ecoSpeciesIDFinal = ecoSpeciesID (Nomen nudum can never be synonyms, by definition in Ecosystemology)
+ecoSp2[is.na(ecoSp2$ecoSpeciesBiotype) | nchar(ecoSp2$ecoSpeciesBiotype) == 0,]$synof_ecoSpecies <- ecoSp2[is.na(ecoSp2$ecoSpeciesBiotype) | nchar(ecoSp2$ecoSpeciesBiotype) == 0,]$ecoSpecies
+ecoSp2[is.na(ecoSp2$ecoSpeciesBiotype) | nchar(ecoSp2$ecoSpeciesBiotype) == 0,]$synof_ecoSpeciesID <- ecoSp2[is.na(ecoSp2$ecoSpeciesBiotype) | nchar(ecoSp2$ecoSpeciesBiotype) == 0,]$ecoSpeciesID
+
+#Check that all synof_ecoSpeciesID are in the list of accepted names
+check_ecoSp2 <- left_join(ecoSp2, 
+          ecoSpeciesListAll %>% mutate(link = 1) %>% dplyr::select(ecoSpeciesID, link) %>% rename(synof_ecoSpeciesID = ecoSpeciesID),
+          by = "synof_ecoSpeciesID")
+check_ecoSp2 <- check_ecoSp2 %>% dplyr::filter(is.na(link))
+nrow(check_ecoSp2)
+```
+Results:
+1 stand (Golder-20130101-1917-1) with lastEident referring to a name that is synonyme: stand's ecoSpecies of lastEident = "Forêt dense tropicale humide sempervirente guinéenne de Guinée Forestière de basse altitude (<500m)". This is on purpose to test the chain search for ultimate valid name.
+
+**If a lastEident is not in the list of accepted names, then 2 options:**
+(a) Correct in BIO (the current determinavit is referring to a synonym)
+(b) Develop here a LOOP function that keep searching for the last implicitly active determinavit of any stand
+
+Trying (b), with one more LOOP to get a lastEident with implicit last identification (final)
+```{r}
+#For all ecoSp names 'i', get the synof_ecoSpeciesID of the name referred in the name 'i's synof_ecoSpeciesID
+ecoSp2 <- left_join(ecoSp2, ecoSp2 %>% dplyr::select(ecoSpeciesID, synof_ecoSpeciesID, synof_ecoSpecies, ecoSpeciesBiotype) %>% rename(synof_ecoSpeciesID = ecoSpeciesID, synof_ecoSpeciesID2 = synof_ecoSpeciesID, synof_ecoSpecies2 = synof_ecoSpecies, synof_ecoSpeciesBiotype = ecoSpeciesBiotype), by = "synof_ecoSpeciesID")
+
+#Check how it looks like for the example implicit eco-determinavit
+xx <- ecoSp2 %>% dplyr::filter(ecoSpeciesBiotype == "Golder-20130101-1917-1")
+
+#Just update the ecoSp table to include only the implicit final synof_
+ecoSp <- ecoSp2 %>% dplyr::select(-synof_ecoSpeciesID, -synof_ecoSpecies) %>% rename(synof_ecoSpeciesID = synof_ecoSpeciesID2, synof_ecoSpecies = synof_ecoSpecies2)
+```
+
+## Get the nomenclaturalStatus for all ecoSpecies names
+Order the complete list of names based on their status: aa-Active Valid, ab-Active Nomen nudum, ba-Homotypic synonyms, bb-Heterotypic synonyms, ca-Paratypic synonyms, da-Other specimens
+```{r}
+ecoSp$nomenclaturalStatus <- ifelse(ecoSp$ecoSpeciesBiotype == ecoSp$synof_ecoSpeciesBiotype & ecoSp$ecoSpeciesID == ecoSp$synof_ecoSpeciesID, "aa-Active Valid", "")
+
+ecoSp$nomenclaturalStatus <- ifelse(nchar(ecoSp$ecoSpeciesBiotype) == 0 & ecoSp$ecoSpeciesID == ecoSp$synof_ecoSpeciesID, "ab-Active Nomen nudum", ecoSp$nomenclaturalStatus)
+
+ecoSp$nomenclaturalStatus <- ifelse(ecoSp$ecoSpeciesBiotype == ecoSp$synof_ecoSpeciesBiotype & ecoSp$ecoSpeciesID != ecoSp$synof_ecoSpeciesID, "ba-Homotypic names", ecoSp$nomenclaturalStatus)
+
+ecoSp$nomenclaturalStatus <- ifelse(ecoSp$ecoSpeciesBiotype != ecoSp$synof_ecoSpeciesBiotype & ecoSp$ecoSpeciesID != ecoSp$synof_ecoSpeciesID, "bb-Heterotypic names", ecoSp$nomenclaturalStatus)
+
+#Get ecoSp date as date
+ecoSp$ecoSpeciesDate <- lubridate::as_date(ecoSp$ecoSpeciesDate)
+
+#Print a systematic table of all accepted ecoSpecies
+ecoSp <- with(ecoSp, ecoSp[order(synof_ecoSpecies, nomenclaturalStatus, ecoSpecies) , ])
+DT::datatable(ecoSp[,c("synof_ecoSpecies", "synof_ecoSpeciesID", "ecoSpecies", "ecoSpeciesID", "ecoSpeciesAuthor", "nomenclaturalStatus")]) %>% DT::formatStyle(columns= 1:6, lineHeight='90%')
+
+#Write this table for script development elsewhere in Shiny
+data.table::fwrite(ecoSp, file = "app/ecosystemology/datainput/ecoSp.txt", append = FALSE, quote = TRUE, sep = "\t") #paste0(getwd(), "/app/ecosystemology/datainput/ecoSp.txt")
+```
+
+## Get p.p. synonymies, i.e. parabiotypes with a currently accepted name that is different from the currently accepted name of their corresponding holobiotype (from the same protologue)
+Parabiotype: is a determinavit(Eident) referring to an ecoSpeciesID + identifiedBy the author of the name + dateIdentified of the name + is not the holobiotype of that name. A parabiotype may or may not be the holobiotype of another name and anyway if its current identification (lastEident) is different from the lastEident of its holobiotype, then a p.p.synonymy is being defined. These are not strictly speaking 'synonymies' since parabiotypes do not define eco-species name but only a protologue circumscription of a name's concept. They are nevertheless important to include in eco-species synonymies because those synonymies are related to the eco-species concept and not just the names, and parabiotypes are key specimens defining eco-species circumscription as conceptualized by authors of eco-species names.
+```{r}
+#For each determinavit, get a code made of the author, date and name of determinavit, so to get all determinavit coming from a protologue
+nrow(Eident) #980 (earlier version: 383)
+EidentParatypes <- Eident
+EidentParatypes$paratypeLink <- paste0(EidentParatypes$identifiedBy, EidentParatypes$dateIdentified, EidentParatypes$ecoSpeciesID)
+
+#For each of the 272 published names (ecoSp) get the same paste0 link from the name's holobiotype determinavit (don't worry about Nomen nudum as they cannot have parabiotypes or p.p. synonymies)
+biotypeList$paratypeLink <- paste0(biotypeList$identifiedBy, biotypeList$dateIdentified, biotypeList$ecoSpeciesID)
+
+#For each determinavit, find out if it is made by the author+protologue date of the name being referred to in the determinavit
+paratypeList <- left_join(EidentParatypes, biotypeList[,c("paratypeLink", "ecoOccurrenceID")] %>% rename(holobiotypeID = ecoOccurrenceID), by = "paratypeLink")
+
+#Now for each of the 980 eco-determinavit get those that are parabiotypes (see above def.)
+paratypeList <- paratypeList[paratypeList$ecoOccurrenceID != paratypeList$holobiotypeID,] #93 rows of determinavit from protogues but not being the actual holobiotypes
+
+#Remove from that list any eco-determinavit done on a biotype (reduces to 16 rows)
+paratypeList <- left_join(paratypeList, biotypeList[,c("ecoOccurrenceID")] %>% mutate(xxtmp = 1), by = "ecoOccurrenceID")
+paratypeList <- paratypeList[is.na(paratypeList$xxtmp),] %>% dplyr::select(-xxtmp)
+
+#Get the lastEident of the parabiotypes
+lastParatypeEident <- lastEident[,c("ecoOccurrenceID", "ecoSpeciesID")] %>% rename(lastParatypeecoSpeciesID = ecoSpeciesID)
+paratypeList <- left_join(paratypeList, lastParatypeEident, by="ecoOccurrenceID")
+
+#Get the lastEident of the holobiotype to that parabiotype
+lastHolobiotypeEident <- lastEident[,c("ecoOccurrenceID", "ecoSpeciesID")] %>% rename(holobiotypeID = ecoOccurrenceID, lastHolobiotypeecoSpeciesID = ecoSpeciesID)
+paratypeList <- left_join(paratypeList, lastHolobiotypeEident, by="holobiotypeID")
+
+#Get the p.p.synonymies (9 rows) parabiotypes that have a current ident referring to a different ecoSpecies that the one from their protologue (where the paratype is cited)
+ppSynonymies <- paratypeList[paratypeList$lastParatypeecoSpeciesID != paratypeList$lastHolobiotypeecoSpeciesID,]
+```
+
+Now put together the 272 ecoSpecies names with the parabiotypes defining p.p.syn.
+note: 383 determinavit, 242 active determinavit, 202 biotypes, 88 accepted ecoSpecies
+```{r}
+#Get the parabiotype list to the format of ecoSp AND relate to the lastEident of the stand they are a determinavit of
+ppSynonymiesList <- ppSynonymies %>% dplyr::select(ecoSpeciesID, ecoSpecies, ecoSpeciesTranslated, identificationReference, identificationReferencePage, identificationReferenceID, identifiedBy, dateIdentified, ecoOccurrenceID, ecoSpeciesEN, ecoSpeciesFR, ecoSpeciesENFR, lastParatypeecoSpeciesID) %>% rename(ecoSpeciesReference = identificationReference, ecoSpeciesReferencePage = identificationReferencePage, ecoSpeciesReferenceID = identificationReferenceID, ecoSpeciesAuthor = identifiedBy, ecoSpeciesDate = dateIdentified, ecoSpeciesBiotype = ecoOccurrenceID, synof_ecoSpeciesID = lastParatypeecoSpeciesID)
+#Add the missing fields and reorder them
+ppSynonymiesList <- left_join(ppSynonymiesList, ecoSp %>% dplyr::select(ecoSpeciesID, ecoSpecies, ecoSpeciesBiotype) %>% rename(synof_ecoSpeciesID = ecoSpeciesID, synof_ecoSpecies = ecoSpecies, synof_ecoSpeciesBiotype = ecoSpeciesBiotype), by = "synof_ecoSpeciesID")
+ppSynonymiesList$nomenclaturalStatus <- "ca-Paratypic synonyms (p.p.)"
+#Reorder the attributes/fields
+ppSynonymiesList <- ppSynonymiesList %>% dplyr::select(ecoSpeciesID, ecoSpecies, ecoSpeciesTranslated, ecoSpeciesReference, ecoSpeciesReferencePage, ecoSpeciesReferenceID, ecoSpeciesDate, ecoSpeciesBiotype, ecoSpeciesAuthor, ecoSpeciesEN, ecoSpeciesFR, ecoSpeciesENFR, synof_ecoSpeciesID, synof_ecoSpecies, synof_ecoSpeciesBiotype, nomenclaturalStatus)
+
+ppSynonymiesList$ecoSpeciesDate <- lubridate::as_date(ppSynonymiesList$ecoSpeciesDate)
+
+#remove the AuthorID from ecoSp
+ecoSp <- ecoSp %>% dplyr::select(-ecoSpeciesAuthorID)
+
+ecoSpParabiotypes <- rbind(ecoSp, ppSynonymiesList)
+
+#Add to this the main ecoSpProf data gathered earlier
+ecoSpParabiotypes <- left_join(ecoSpParabiotypes, ecoSpeciesListAll %>% dplyr::select(ecoSpeciesID, IUCNL3ID, IUCNL3, BIOL4ID, BIOL4, BIOL4Ordering, lifeZone, ecoOrder, ecoFamily, ecoGenus, ecoGenusOrdering, RLEStatus) %>% rename(synof_ecoSpeciesID = ecoSpeciesID), by = "synof_ecoSpeciesID")
+
+#Print the updated systematic table of all accepted ecoSpecies + p.p. synonymes
+ecoSpParabiotypes <- with(ecoSpParabiotypes, ecoSpParabiotypes[order(synof_ecoSpecies, nomenclaturalStatus, ecoSpecies) , ])
+DT::datatable(ecoSpParabiotypes[,c("synof_ecoSpecies", "synof_ecoSpeciesID", "ecoSpecies", "ecoSpeciesID", "nomenclaturalStatus", "ecoSpeciesAuthor", "ecoSpeciesDate", "ecoSpeciesBiotype")]) %>% DT::formatStyle(columns= 1:8, lineHeight='90%')
+
+#Write this table for script development elsewhere in Shiny
+data.table::fwrite(ecoSpParabiotypes, file = "app/ecosystemology/datainput/ecoSpParabiotypes.txt", append = FALSE, quote = TRUE, sep = "\t")
+#data.table::fwrite(ecoSpParabiotypes, file = paste0(getwd(), "/app/ecosystemology/datainput/ecoSpParabiotypes.txt"), append = FALSE, quote = TRUE, sep = "\t")
+```
+Thus we get the 272 names and synonymies + 19 eco-specimens responsible for p.p.syn.
+
+# Enriching ED with attributes describing their ecosystemology value
+identLevel, ecoUse
+leading to production of EDlastEident enriched version
+
+Find existing ED data (eco-occurrences or stands) likely identifiable to eco-species
+Among the >16000 eco-occurrence data (ED), only a few hundreds are identified to eco-species (for the eco-species currently available which are in West Africa). Therefore, both to complete the distribution data in West Africa and to develop some knowledge of the available stands to potentially use for developing the taxonomy of eco-species in Seychelles, I need to filter out stands depending on how useful they are for this purpose.
+The most suitable stands are those identified at least to eco-genus, or those with a detailed species survey (plot or relevé), or those with some field recording of key ecosystem characters, including photos, and of course including precise coordinates.
+Basically, like for any taxonomic revision, we need to make the list of the specimens potentially useful for the revision.
+
+N.B.: The two key input produced earlier in the script are:
+  ecoSp = ecoSpeciesList.txt  
+  (272; contains only names with biotypes)
+  -ecoSpParabiotypes 
+  
+So, first get these 2 objects either by running the script above, or by importing the exported outcomes (see below).
+
+We also have from the above script the other following elements:
+ED, Eident, EDchars, ecoGechars, ecoGe, ecoFa, ecoOr, lastEident (saved version)
+
+## Get ecosystem distribution data from GBIF stands (previous section)
+So far, 2 objects were produced and writtent to the shiny app folder: ecoSp and ecoSpParabiotypes
+```{r}
+ecoSp = data.table::fread("app/ecosystemology/datainput/ecoSp.txt", header = TRUE, sep = "\t", dec = ".", encoding = "UTF-8")
+ecoSp$ecoSpeciesID <- as.character(ecoSp$ecoSpeciesID)
+ecoSp$synof_ecoSpeciesID <- as.character(ecoSp$synof_ecoSpeciesID)
+
+#Run the 2 lines below if the object lastEident was not created by running the first section of code
+#lastEident = data.table::fread("bioecosystemShiny/lastEident.txt", header = TRUE, sep = "\t", dec = ".", encoding = "UTF-8")
+#lastEident$ecoSpeciesID <- as.character(lastEident$ecoSpeciesID)
+
+#If necessary get the source ED from Zenodo
+#ED = data.table::fread("ecoOccurrences.txt", header = TRUE, sep = "\t")
+```
+
+## Get identLevel for all stands (ED)
+Stands (ED) that are at least identified to eco-genus/fa/or
+For Seychelles, at this stage, we have not yet published eco-species, so the dataset ED+lastEidentraw gives us:
+1 stand identified to eco-order
+133 stands identified to eco-family
+181 stands identified to eco-genus
+
+So we are gonna combine here ED + lastEident, and then get the level of ecosystem identification
+EDlastEident (now we get our 16000 records)
+```{r}
+EDlastEident <- left_join(ED, lastEident, by="ecoOccurrenceID")
+
+#Remove unnecessary fields
+EDlastEident <- EDlastEident %>% dplyr::select(-kingdom, -taxonRemarks,)
+
+#Get the identLevel
+EDlastEident$identLevel <- ifelse(nchar(EDlastEident$ecoOrder)>1 & !is.na(EDlastEident$ecoOrder), "toOrder", "")
+EDlastEident$identLevel <- ifelse(nchar(EDlastEident$ecoFamily)>1 & !is.na(EDlastEident$ecoFamily), "toFamily", EDlastEident$identLevel)
+EDlastEident$identLevel <- ifelse(nchar(EDlastEident$ecoGenus)>1 & !is.na(EDlastEident$ecoGenus), "toGenus", EDlastEident$identLevel)
+EDlastEident$identLevel <- ifelse(nchar(EDlastEident$ecoSpecies)>1 & !is.na(EDlastEident$ecoSpecies), "toSpecies", EDlastEident$identLevel)
+
+#Print the stats
+ecoIDStats <- EDlastEident %>% dplyr::group_by(identLevel) %>% dplyr::summarize(n=n())
+DT::datatable(setDT(ecoIDStats))
+```
+
+## Get the 'nomenclaturalStatus' (from Section 1) into EDlastEident
+```{r}
+EDlastEident <- left_join(EDlastEident, ecoSpParabiotypes %>% dplyr::select(ecoSpeciesBiotype, nomenclaturalStatus) %>% rename(ecoOccurrenceID = ecoSpeciesBiotype), by = "ecoOccurrenceID")
+
+EDlastEident[is.na(EDlastEident$nomenclaturalStatus),]$nomenclaturalStatus <- "da-Other specimens"
+
+EDStats <- EDlastEident %>% dplyr::group_by(nomenclaturalStatus) %>% dplyr::summarize(n=n())
+DT::datatable(setDT(EDStats))
+```
+
+## Get the ecoUse attribute categorizing the stand's ecosystemology use
+Either use ifelse statements (complicate) or try with a series of filters #EDlastEident$ecoUse <- ifelse(nchar(EDlastEident$ecoOrder)>1 & !is.na(EDlastEident$ecoOrder), "toOrder", "")
+```{r}
+EDlastEident1 <- EDlastEident %>% dplyr::filter(
+  nomenclaturalStatus == "aa-Active Valid" | nomenclaturalStatus == "ba-Homotypic names" | nomenclaturalStatus == "bb-Heterotypic names"
+) %>% mutate(ecoUse = "1-Biotype") #203
+
+EDlastEident2 <- EDlastEident %>% dplyr::filter(
+  nomenclaturalStatus != "aa-Active Valid" & nomenclaturalStatus != "ba-Homotypic names" & nomenclaturalStatus != "bb-Heterotypic names" & identLevel == "toSpecies"
+) %>% mutate(ecoUse = "2-Identified") #193
+
+EDlastEident3 <- EDlastEident %>% dplyr::filter(nomenclaturalStatus == "da-Other specimens" & (nplots > 0 | nchar(identLevel)>1) & identLevel != "toSpecies") %>% mutate(ecoUse = "3-toIdentify") #570
+
+EDlastEident4 <- EDlastEident %>% dplyr::filter(nomenclaturalStatus == "da-Other specimens" & nplots == 0 & nchar(identLevel) < 2 & stringr::str_detect(recordedBy, "Senterre") & nchar(decimalLatitude)>0 & !is.na(decimalLatitude)  & nchar(habitat) > 0) %>% mutate(ecoUse = "4-Identifiable") #2912
+
+#Put them all together
+EDlastEident_tmp <- rbind(EDlastEident1, EDlastEident2, EDlastEident3, EDlastEident4)
+EDlastEident5 <- left_join(EDlastEident, EDlastEident_tmp %>% dplyr::select(ecoOccurrenceID, ecoUse), by = "ecoOccurrenceID")
+EDlastEident5 <- EDlastEident5 %>% dplyr::filter(is.na(ecoUse)) #12287
+EDlastEident5$ecoUse <- "5-toReview"
+EDlastEident <- rbind(EDlastEident_tmp, EDlastEident5) #16165
+
+EDStats <- EDlastEident %>% dplyr::group_by(ecoUse) %>% dplyr::summarize(n=n())
+DT::datatable(setDT(EDStats))
+```
+
+## Get isMappable to tag all ED that can be mapped
+```{r}
+EDlastEident$isMappable <- ifelse(!is.na(EDlastEident$decimalLatitude) & EDlastEident$decimalLatitude > -90 & EDlastEident$decimalLatitude < 90 & !is.na(EDlastEident$decimalLongitude) & EDlastEident$decimalLongitude > -180 & EDlastEident$decimalLongitude < 180, 1, 0)
+
+#View it in DT, as a list of occurrence for a selected ecoSpi in Shiny
+EDlastEidentDT <- EDlastEident %>% dplyr::select(recordedBy, recordNumber, eventDate, country, verbatimLocality, habitat, verbatimElevation, degreeOfInvasion, ecoNaturalness, nplots, ecoOccurrenceID, isMappable, ecoUse, decimalLongitude, decimalLatitude) %>% rename(num = recordNumber, date = eventDate, locality = verbatimLocality, altit = verbatimElevation, invasion = degreeOfInvasion, natural = ecoNaturalness)
+
+DT::datatable(setDT(EDlastEidentDT %>% dplyr::select(-isMappable, -ecoUse, -decimalLongitude, -decimalLatitude)),
+              options = list(scrollX = TRUE,
+                         columnDefs = list(
+                                       list(
+                                         targets = 4:5,
+                                         render = JS(
+                "function(data, type, row, meta) {",
+                "return type === 'display' && data.length > 50 ?",
+                "'<span title=\"' + data + '\">' + data.substr(0, 50) + '...</span>' : data;",
+                "}")))),
+          escape = FALSE,
+          rownames = FALSE)
+```
+
+Quickly view the data
+```{r}
+EDlastEident_sf <- st_as_sf(EDlastEidentDT[EDlastEidentDT$isMappable == 1 & EDlastEidentDT$ecoUse != "5-toReview",], coords = c("decimalLongitude", "decimalLatitude"), crs=4326 ) 
+
+#Print a map of all plot and their level of ecosystemic identification
+mapview(EDlastEident_sf, zcol="ecoUse")
+```
+
+## Save EDlastEident enriched version for use in Shiny
+```{r}
+data.table::fwrite(setDT(EDlastEident), file = "app/ecosystemology/datainput/EDlastEident.txt", append = FALSE, quote = TRUE, sep = "\t")
+
+#Read it back
+EDlastEident = data.table::fread("app/ecosystemology/datainput/EDlastEident.txt", header = TRUE, sep = "\t", dec = ".", encoding = "UTF-8")
+EDlastEident$ecoSpeciesID <- as.character(EDlastEident$ecoSpeciesID)
+```
+
+# Get ecosystem distribution maps
+In version 1 of ecosystemology script, I used a combination of GBIF ED points + EE vectors + EE raster.
+I will now change this by having the rasters more easily accessible from Zenodo AND by having the vector geometries recorded as WKT directly in the dataset ED published on Zenodo.
+I am also changing the way maps and RLE are done by not using rasters anymore but rather by using polygonized versions of them (for maps) or a point version (for RLE). And I am now using 'terra' in place of 'raster'.
+
+## Creating ecoSpecies distribution data from local raster data sources (Zenodo)
+In the first version of ecosystemology, I had used Earth Engine (EE) to publish my ecosystem raster maps and also to query those source rasters into producing single ecoSpecies raster that I could then import into a Shiny app.
+This solution has several inconvenients. Firstly, EE is not so directly available to the largest public, because of less straightforward creation of a user account. Secondly, unique identifiers are not necessarily stable in EE: the unique link of an EE asset changes if the asset is renamed of placed elsewhere. Thirdly, because of some restriction inherent to EE, exporting data from and to the Google drive is not really fast at all.
+Nevertheless, for my West Africa ecosystem studies, I could manage to run complex raster manipulation from within R, and this is also why I continued using EE for that particular dataset.
+
+For Seychelles, the raster data are more detailed and can be more easily compiled using R (at my level of R skills). I was also asked by GBIF to avoid publishing ecosystem occurrences on their platform and rather use Zenodo. Therefore, for Seychelles, I am trying this approach based on rasters published on Zenodo and manipulated within R.
+
+
+**Note on using Terra (the new 'raster') (and maybe stars?) and Zenodo**
+These data are available on https://doi.org/10.5281/zenodo.7511302
+Once downloaded they will be located in my local "Download" folder.
+
+I am trying out something else (17-1-2023) using the package 'terra' in place of 'raster': OKKKK this works much better!!
+
+Next thing is to learn tmap because then I do not need raster anymore and I can stick to terra (=raster's newer version)
+
+Also, how to deal with the fact that some mapping units correspond to an exact ecoSp (118) while others (e.g. 110, coastal forest) correspond more to a BIO_L4 entity or an ecoFa?
+Ideally, I would like the mapping unit 110 to print a distribution map for all ecoSpp nested within it, which I can get automatically via their BIO_L4 attribution.
+
+**Importing the data source downloaded from Zenodo**
+```{r}
+myPath <- "C:/Users/bsent/Downloads/"
+ecoGe_cur <- terra::rast(paste0(myPath, "Senterre_2021_SeyInner_EcoGe_cur.tif")) #FAST!
+ecoGe_pre <- terra::rast(paste0(myPath, "Senterre_2021_SeyInner_EcoGe_pre.tif"))
+DEM <- terra::rast(paste0(myPath, "Senterre_2021_SeyInner_DEM_Lidar_Jaxa.tif"))
+nat <- terra::rast("D:/ZAnalysis/ZDraft/datainput/Senterre_2021_SeyInner_Naturalness.tif")
+
+#Testing speed for rendering rasters: NOOOO This does not seem good at all
+#ecoGe_cur_stars = stars::read_stars(paste0(myPath, "Senterre_2021_SeyInner_EcoGe_cur.tif"), proxy = T)
+#mapview(ecoGe_cur_stars) #OK is fast but not really nice for zooming compared to shp
+#Is it still the case if I get an ecoSpi raster and I increase resolution to 30m?
+#ecoGei_cur <- ecoGe_cur
+#ecoGei_cur[ecoGei_cur != 18] <- NA
+#ecoGei_cur[ecoGei_cur == 18] <- 1 
+#terra::writeRaster(ecoGei_cur, filename=paste0("ecoGei_cur", ".tif"), datatype = 'INT1U', overwrite=TRUE)
+#ecoGei_cur <- terra::project(x = ecoGei_cur, y = ecoGei_cur, method="near", res=30)
+#ecoGei_cur_stars = stars::read_stars("ecoGei_cur.tif", proxy = T)
+#mapview(ecoGei_cur_stars)
+
+natReclass <- c(1, 10, 2, 1, 3, 1) #natReclass <- c(1, 10, 2, 1, 3, NA)
+natMatrix <- matrix(natReclass, ncol = 2, byrow = TRUE)
+natReclass <- terra::classify(nat,natMatrix)
+#For some reason the ocean became '0', so anyway I have to send that to NA
+natReclass[natReclass == 0] <- NA
+
+altibeltReclass <- c(-100, 300, 1, 300, 500, 2, 500, 780, 3, 780, Inf, 4)
+altibeltMatrix <- matrix(altibeltReclass, ncol = 3, byrow = TRUE)
+altibelt <- terra::classify(DEM,altibeltMatrix)
+
+ecoSp_cur <- (altibelt * 100) + (ecoGe_cur)
+ecoSp_pre <- (altibelt * 100) + (ecoGe_pre)
+
+#Check what raster values area contained
+xx <- terra::unique(ecoSp_cur) %>% as.data.frame()
+#Note that the name of the raster value is "alt", taken from the first raster used in calculation
+
+#EcoSp_cur_utm <- terra::project(x = EcoSp_cur, y = "epsg:32740", method="near", res=30)
+```
+
+**Get the list of ecoSpeciesID that have a corresponding EcoSp_cur code: 46 of them!**
+In the BIO database, in the eco-species profile table (ecoSpProf), there is a field 'ecoSpecies Distribution' that contains for a given ecoSpeciesID the corresponding raster value from the raster ecoSp_cur as defined above, based on Zenodo input.
+xx I will need to improve a bit this: in BIO, I need 2 fields (one for the code, and one for a textual description), plus eventually information on the raster object that the code value refers to. I also need to deal with p.p. links.
+```{r}
+ecoSpProfProto <- ecoSpProf %>% dplyr::filter(isProtologue == 1) #272 of them
+ecoSpDistrib <- left_join(ecoSp %>% dplyr::group_by(synof_ecoSpeciesID) %>% dplyr::summarise() %>% rename(ecoSpeciesID = synof_ecoSpeciesID), ecoSpProfProto %>% dplyr::select(ecoSpeciesID, ecoSpeciesDistributionRasterValue), by = "ecoSpeciesID")
+ecoSpDistribSEY <- ecoSpDistrib %>% dplyr::filter(as.numeric(ecoSpeciesDistributionRasterValue)>0)
+```
+
+**For each EcoSp_cur code of the list, get the lightweight shp in my Shiny app folder**
+This chunk takes about 15 minutes to run, so run this chunk only when there is a major update in the ecoSpMeta, or just the first time in full and then later only add new ecoSp.
+```{r eval=FALSE}
+#Write a loop using 'for' to extract all individual ecoSp geotif rasters in my local repository
+for (i in 1:nrow(ecoSpDistribSEY)){
+  #Get the ième ecoSpeciesID of the list
+  ecoSpeciesIDi <- ecoSpDistribSEY[i,]$ecoSpeciesID #e.g. 118=lowland mesic forest=20230109130519
+  #Get the corresponding EcoSpi_cur code
+  codeSpi <- as.numeric(ecoSpDistribSEY[i,]$ecoSpeciesDistributionRasterValue) #e.g. 118 as above
+  #Get the individual ecoSpi raster
+  ecoSpi_cur <- ecoSp_cur
+  ecoSpi_cur[ecoSpi_cur != codeSpi] <- NA
+  ecoSpi_cur[ecoSpi_cur == codeSpi] <- 1 
+  #These 2 steps here are the bottleneck, so that is why I am going for a solution where the ecoSpi rasters are saved prior to running Shiny, rather than creating them onthefly in Shiny.
+  
+  #Get the EcoSpi_cur integrating the conservation value ('cv')
+  ecoSpi_cur_cv <- ecoSpi_cur * natReclass #The values of this raster are still called "alt"
+  
+  #OUTDATED: no need anymore to go through writing a raster, as I found faster way via vector
+  #reduce the resolution (for data size and performance reasons)
+  #ca. 0.4Mb for 50m res, and 0.9Mb for 30m (so very much OK)
+  #EcoSpi_cur_cv <- terra::project(x = EcoSpi_cur_cv, y = EcoSpi_cur_cv, method="near", res=50)
+  #Write the result to the Shiny app folder, naming it with the ecoSpeciesID
+  #terra::writeRaster(EcoSpi_cur_cv, filename=paste0("bioecosystemShiny/ecoSp_", ecoSpeciesIDi, ".tif"), datatype = 'INT1U', overwrite=TRUE)
+  #raster::writeRaster(raster::raster(EcoSpi_cur_cv), file=paste0("bioecosystemShiny/ecoSp_", ecoSpeciesIDi, ".tif"), format="GTiff", overwrite=TRUE)
+  
+  #New way, using vector: convert the ecoSpi raster to vector
+  ecoSpi_cur_cv_Po_Terra <- terra::as.polygons(ecoSpi_cur_cv, trunc=TRUE, dissolve=TRUE, values=TRUE, na.rm=TRUE, extent=FALSE)
+  ecoSpi_cur_cv_Po_Terra <- ecoSpi_cur_cv_Po_Terra %>% tidyterra::rename(nat = 1) #alt
+  terra::writeVector(ecoSpi_cur_cv_Po_Terra, filename=paste0("app/ecosystemology/datainput/ecoSp_", ecoSpeciesIDi, ".shp"), filetype="ESRI Shapefile", overwrite=TRUE, options="ENCODING=UTF-8") #filetype="GeoJSON" BUT THIS IS 3 TIMES LARGER RESULT, layer=NULL, insert=FALSE, 
+}
+``` 
+
+Get the prehuman coverage stats: This take some time to run (ca. 10 minutes), and should not change until another model of prehuman ecosystem distribution is done. So I calculate this just once, and then I can use the saved copy as source table for the addition of other stats later in the section "Get ecosystem stats".
+```{r eval=FALSE}
+ecoSpeciesIDList <- ecoSp %>% dplyr::filter(grepl('aa-|ab-', nomenclaturalStatus) & grepl('Seychelles', ecoSpecies)) %>% dplyr::select(ecoSpeciesID)
+
+#Create an empty table to receive ecoSpi RLE results
+ecoSpRLE <- ecoSpeciesIDList  %>% mutate(index = NA, value = NA, units = NA) %>% dplyr::filter(ecoSpeciesID == "lalala")
+
+#Write a loop similar to above
+for (i in 1:nrow(ecoSpDistribSEY)){
+  #Get the ième ecoSpeciesID of the list
+  ecoSpeciesIDi <- ecoSpDistribSEY[i,]$ecoSpeciesID #e.g. 118=lowland mesic forest=20230109130519
+  #Get the corresponding EcoSpi_cur code
+  codeSpi <- as.numeric(ecoSpDistribSEY[i,]$ecoSpeciesDistributionRasterValue) #e.g. 118 as above 
+
+ #Add now the prehuman ecoSpi coverage area to the ecoSpRLE stats
+  #Get the EcoSpi_cur code corresponding to the selected ecoSpeciesIDi
+  ecoSpi_pre <- ecoSp_pre
+  ecoSpi_pre[ecoSpi_pre != codeSpi] <- NA
+  ecoSpi_pre[ecoSpi_pre == codeSpi] <- 1
+  #Get the coverage area of the SpatRaster
+  totalAreaPre <- terra::expanse(ecoSpi_pre, unit="ha") #terra::area(terra::cellSize(ecoSpi_pre, mask=TRUE, unit="ha"), sum=TRUE)
+  totalAreaPre <- round(totalAreaPre, digits = 1)
+  #Add that stat to ecoSpRLE
+  ecoSpiRLETotalPre <- list(ecoSpeciesIDi, "Total area in prehuman state", totalAreaPre, "ha") %>% as.data.frame() %>% rename(ecoSpeciesID = 1, index = 2, value = 3, units = 4)
+  ecoSpiRLETotalPre <- rbind(ecoSpRLE, ecoSpiRLETotalPre)
+}
+
+#Save the result
+data.table::fwrite(setDT(ecoSpiRLETotalPre), file = "app/ecosystemology/datainput/ecoSpiRLETotalPre.txt", append = FALSE, quote = TRUE, sep = "\t")
+```
+  
+## Using Earth Engine data sources (for West Africa)
+In version 1.0, I had used Earth Engine raster and vectors rather then Zenodo or local copies of those GIS input data. This was due to the nature of my GIS data for West Africa, where I had to do slightly more complicate operations to create individual eco-species rasters (not just a reclassification but a combination of rasters with conditional statements), and simply could not do it in R. I also did not know at the time about WKT and the possibility to publish polygons, lines and multipoint geometries directly within BIO, and so I introduced another complication by managing vector eco-species data in EE.
+While the EE vector aspect is now completely obsolete, the eco-specues raster creation is still something that I cannot do in R.
+
+In this section, I retain the script that allows me to extract the eco-species raster from EE into my Shiny app folder.
+I also retain the part that recovers copies of the EE vector data, although I hope to soon completely replace this by a direct management in BIO.
+
+More generally, it does not matter really how we create the local ecoSpi_ rasters or vectors as long as they are saved in the Shiny app folder. For use in Shiny, it seems better to have either shapefiles or rasters that I would read with the package stars (resolution in mapview dependant on zoom level).
+
+Since I am unlikely to be able to run rgee in a shiny app, I have to develop this script here aiming to produce outputs that will be used as 'inputs' in a shiny app on ecosystems (just like SP2acc and SDint).
+Using rgee allows us to base our work on a recognized repository of published geospatial data (as EE assets), BUT the real power of using rgee is in the capability to deal with raster data using the computing power of EE and without having to worry about raster extents and resolutions.
+The main documentation to find out how to write EE script in R using rgee is:
+https://csaybar.github.io/rgee-examples/
+https://r-earthengine.com/rgeebook/image.html?q=express#expresions
+https://rdrr.io/github/r-spatial/rgee/f/vignettes/rgee03.Rmd
+
+### Initialize rgee (for Google Earth Engine) (after having installed it and set it up)
+This has been really hard, so I compiled my trials and errors in the script 'rgee_install.Rmd'. Once set up with a clean python virtual environment and a well done project-based .Renviron file, this should become straightforward.
+```{r eval=FALSE}
+library(rgee)
+library(googledrive)
+library(reticulate)
+
+#Check that my current session is using the right python environment
+reticulate::py_config()
+#Should be: C:/Users/bsent/miniconda3/envs/rgee_py/python.exe
+
+#Check that rgee is all set up
+ee_check()
+
+#If necessary, check the .Renviron file
+#library(usethis)
+#usethis::edit_r_environ(scope = "project")
+
+#Start an rgee (Earth Engine session, using your credential, already shared during set up)
+ee_Initialize(drive = T)
+```
+
+### Brief demo of what can be done with rgee
+```{r eval=FALSE}
+## Load the map of integrated land uses
+LUPimg <- ee$Image("users/bsenterre/seychelles_ecosystems/Senterre_2021_SeyInner_LUP")
+Map$addLayer(eeObject=LUPimg,visParams=list(palette = c(
+  "#d73027", "#f46d43", "#fdae61", "#fee08b","#d9ef8b","#a6d96a",
+  "#66bd63", "#1a9850"),min=0,max=5),name="Classif")
+Map$setCenter(55.666,-4.2128, zoom = 14)
+
+DEMSeyimg <- ee$Image("JAXA/ALOS/AW3D30_V1_1") #For the Jaxa globl elevation model at 30m
+elev <- DEMSeyimg$select("AVE")
+Map$setCenter(55.666,-4.2128, zoom = 14)
+
+roi<-ee$Geometry$Polygon(list(
+  c(55.65791319020253,-4.216155165829113),
+  c(55.675723058061415,-4.216155165829113),
+  c(55.675723058061415,-4.208793667522785),
+  c(55.65791319020253,-4.208793667522785))) ## for Aride
+
+elev_clip <- elev$clip(roi)
+
+# To download locally the DEM (still an ee object) as a geotiff
+aride_dem <- ee_as_raster(image = elev_clip,scale = 10,via = "drive") ## This gets the ee image locally as a raster inside R
+writeRaster(aride_dem, file="aride_dem.tif", format="GTiff") ## Write the raster obtained above to a file locally
+
+#Get Sentinel-2 imagery ###
+```
+
+### bioOccurrences datasets (Polygons, Lines, Points)
+This chunk will become obsolete soon, no need to rerun it as the results are already saved in the shiny app folder.
+```{r eval=FALSE}
+#Dwarf forests on ironstone Nimba + Wologizi; Mare d'Hivernage; Acacia concinna
+occPo <- ee$FeatureCollection("users/bsenterre/bioOccurrences/bioOccurrencePolygon")
+#Cassures de cuirasses
+occLn <- ee$FeatureCollection("users/bsenterre/bioOccurrences/bioOccurrenceLine")
+#backshoreSandDuneGapped.shp + swampsuperhumid.shp
+occPt <- ee$FeatureCollection("users/bsenterre/bioOccurrences/bioOccurrencePoint")
+
+#Explore the occPoly EE object
+ee_print(occPo)
+
+#Convert it to a sf object
+occPosf <- ee_as_sf(occPo, crs = 4326)
+occLnsf <- ee_as_sf(occLn, crs = 4326)
+occPtsf <- ee_as_sf(occPt, crs = 4326)
+
+#Check on its properties
+glimpse(occPosf)
+colnames(occPosf)
+
+#Can I combine sf of different nature, line polygon point?
+bioOcc <- rbind(occPosf, occLnsf, occPtsf)
+#mapview(tmpx) #OR THAT WORKS but the lines are being shown as polygons
+
+#Get all EE data with ecoOccurrenceID: 4 entries out of 193 bioOcc
+bioOccOccID <- bioOcc[nchar(bioOcc$ecoOccurrenceID)>1,]
+#So first, get the ecoSpeciesID link for stuff linked to ecoOccurrenceID
+colnames(ecoSpeciesListSynonyms4) #so the name is 'occurrenceID'
+gbifOcc <- ecoSpeciesListSynonyms4 %>% rename(ecoOccurrenceID = occurrenceID)
+#Get the data into the bioOccOccID
+bioOccOccID <- left_join(bioOccOccID[,c("ecoOccurrenceID")], gbifOcc, by = "ecoOccurrenceID")
+
+#Get all EE data with ecoSpeciesID: 21 entries out of 193 bioOcc
+bioOccSpID <- bioOcc[nchar(bioOcc$ecoSpeciesID)>1,]
+
+#Get bioOccSpID with all eco-taxonomic fields of bioOccOccID
+#colnames(ecoSpeciesListSynonyms)#The object to start from is ecoSpeciesListSynonyms
+#colnames(bioOccOccID) #To see which fields are needed from the above, to later rbind to bioOccOccID
+ecotaxotmp <- ecoSpeciesListSynonyms[,c("lifeZoneID", "lifeZone", "ecoOrderID", "ecoOrder", "ecoFamilyID", "ecoFamily", "ecoGenusID", "ecoGenus", "ecoSpeciesID", "ecoSpecies", "ecoSpeciesTranslated", "ecoSpeciesEN", "ecoSpeciesFR", "ecoSpeciesENFR", "identificationReference", "identificationReferencePage", "identificationReferenceID", "synof_ecoSpeciesID", "synof_ecoSpecies", "synof_ecoSpeciesBiotype", "nomenclaturalStatus")] 
+ecotaxotmp$ecoSpeciesID <- as.character(ecotaxotmp$ecoSpeciesID)
+bioOccSpID <- left_join(bioOccSpID[,c("associatedEcoSpeciesID", "basisOfRecord", "ecoSpeciesID", "recordedBy", "eventDate")], ecotaxotmp, by = "ecoSpeciesID")
+
+#Combine using rbind with 'fill' to put NA in all fields missing in bioOccSpID
+#The fill gives a bug regarding crs projection, so I have to set fields manually
+bioOcc2 <- rbind(bioOccOccID[,c("lifeZoneID", "lifeZone", "ecoOrderID", "ecoOrder", "ecoFamilyID", "ecoFamily", "ecoGenusID", "ecoGenus", "ecoSpeciesID", "ecoSpecies", "ecoSpeciesTranslated", "ecoSpeciesEN", "ecoSpeciesFR", "ecoSpeciesENFR", "identificationReference", "identificationReferencePage", "identificationReferenceID", "synof_ecoSpeciesID", "synof_ecoSpecies", "synof_ecoSpeciesBiotype", "nomenclaturalStatus")], 
+                bioOccSpID[,c("lifeZoneID", "lifeZone", "ecoOrderID", "ecoOrder", "ecoFamilyID", "ecoFamily", "ecoGenusID", "ecoGenus", "ecoSpeciesID", "ecoSpecies", "ecoSpeciesTranslated", "ecoSpeciesEN", "ecoSpeciesFR", "ecoSpeciesENFR", "identificationReference", "identificationReferencePage", "identificationReferenceID", "synof_ecoSpeciesID", "synof_ecoSpecies", "synof_ecoSpeciesBiotype", "nomenclaturalStatus")])#, fill = TRUE)
+
+#Now I can export this as additional input for bioecocystemShiny: 25 rows from 21 ecoSpeciesID links and 4 from ecoOccurrenceID links.
+#We write it to geojson to avoid issues with abbreviated field names wit shp
+st_write(bioOcc2, "ecoSpeciesOccurrences_eevector.geojson", driver = "GeoJSON", append=FALSE)
+#But geojson also did not work due to mixing of different types of geometries?
+#Therefore, I will have to redo the compilation above within the shiny app, and I need to export the EE vector files to have them within my shiny directory
+st_write(occPosf, paste0("app/ecosystemology/datainput/occPosf.shp"), driver = "ESRI Shapefile", append = FALSE)
+st_write(occLnsf, paste0("app/ecosystemology/datainput/occLnsf.shp"), driver = "ESRI Shapefile", append = FALSE)
+st_write(occPtsf, paste0("app/ecosystemology/datainput/occPtsf.shp"), driver = "ESRI Shapefile", append = FALSE)
+```
+
+### Raster datasets with EE
+We suggest publishing raster data together with vector data on Earth Engine (since this is already a very large, and free, repository of spatial data for environmental studies). For the reasons explained in the dataset published on GBIF (see xx), we also suggest that geographic objects corresponding to eco-species (either directly available or obtained by combinations of rasters and / or vectors) be published on Earth Engine in a given users's assets, in a folder named "bioOccurrences", and using the following file naming rule: prefix "ecoSp_" followed by the eco-species ID as given in the GBIF dataset. If such raster is being created in EE via a script expression based on several more elementary input rasters (or ecosystem components, or characters), then the scripts itself has value of eco-determinavit and is saved in a script named following the same rule, and saved in a dedicated folder or repository of the users's EE account. This way, it should always be easy to locate a script having produced a given eco-species geographic object, as well as to locate the geographic object itself.
+For the sake of rapidity, we can create the single eco-species raster assets based on EE expressions and an export to asset function at a relatively broad scale (e.g. 100m), depending on the extent of the eco-species mapped.
+Once this is done, I can get all esoSpecies raster data as local geotif copies in my local R directory used for the production of a shiny app on ecosystemology (which will never be able to run directly rgee, or I cannot do it)
+
+**Get the EE raster objects as local copies in my shiny app folder**
+```{r eval=FALSE}
+#This chunk takes about 1h30 to run
+#Load the EE raster assets
+#ecoSpecies EEimage assets defined as per mid-September 2022
+inputEEList <- c("ecoSp_20200418143610", "ecoSp_20200505100648", "ecoSp_20200505112446", "ecoSp_20200505130451", "ecoSp_20200505152705", "ecoSp_20200505160431", "ecoSp_20200506113810", "ecoSp_20200804131020", "ecoSp_20200804140517", "ecoSp_20200804141603")
+
+#Write a loop using 'for' to convert all EE images to geotif rasters in my local repository
+for (i in 1:length(inputEEList)){
+  #Get the ième EE image of the list
+  ri=ee$Image(paste0("users/bsenterre/bioOccurrences/",inputEEList[[i]]))
+  #get it as raster in R (from an EE image)
+  ri <- ee_as_raster(ri, #region=AOI,
+                     via = "drive",
+                     scale = 100)
+  #When the EE image is converted to an R raster, NA pixels become "0", so we need to fix it here 
+  ri[ri == 0] <- NA
+  #Then, finally, I get the image in my local folder: 140 kb
+  writeRaster(ri, file=paste0("app/ecosystemology/datainput/", inputEEList[[i]],".tif"), format="GTiff", overwrite=TRUE)
+}
+```
+
+### Testing a fast way to load and map these raster data or their polygon equivalent
+```{r eval=FALSE}
+#Read the ecoSp_ individual rasters saved during version 1.0 as .tif in Shiny app folder
+ecoSpiWaf <- terra::rast(paste0("app/ecosystemology/datainput/", "ecoSp_20200418143610.tif")) #6.4Mb
+ecoSpiWaf_small <- terra::aggregate(ecoSpiWaf, fact=5, fun="max", na.rm=TRUE)
+ecoSpiWaf_small <- raster::raster(ecoSpiWaf_small)
+mapraster <- mapview(ecoSpiWaf_small, na.color="transparent")
+
+#Converting to polygons from the SpatRaster is fast
+ecoSpiWaf_Po_Terra <- terra::as.polygons(ecoSpiWaf_small, trunc=TRUE, dissolve=TRUE, values=TRUE, na.rm=TRUE, extent=FALSE)
+#Converting to sf is till fast
+ecoSpiWaf_Po_Terra_sf <- st_as_sf(ecoSpiWaf_Po_Terra)
+#mapviewing it is still fast
+mapview(ecoSpiWaf_Po_Terra_sf)
+
+#See how heavy would it be to write the shapefile
+#ecoSpi_cur_cv_Po_Terra <- ecoSpi_cur_cv_Po_Terra %>% tidyterra::rename(nat = alt)
+terra::writeVector(ecoSpiWaf_Po_Terra, filename=paste0("app/ecosystemology/datainput/", "ecoSp_20200418143610.shp"), filetype="ESRI Shapefile", overwrite=TRUE, options="ENCODING=UTF-8")
+#This is still decently fast and bring the data to a 2.3Mb shp for a tiff raster source of 6.3Mb
+```
+
+### Convert my previously saved eco-species rasters from EE to shp copies
+This loop is quite fast
+```{r}
+#ecoSpecies EEimage assets defined as per mid-September 2022
+inputEEList <- c("ecoSp_20200418143610", "ecoSp_20200505100648", "ecoSp_20200505112446", "ecoSp_20200505130451", "ecoSp_20200505152705", "ecoSp_20200505160431", "ecoSp_20200506113810", "ecoSp_20200804131020", "ecoSp_20200804140517", "ecoSp_20200804141603")
+
+#Create a For loop to get all the created .tif (from the list) to .shp
+for (i in 1:length(inputEEList)) {
+  #Read the local .tif
+  ecoSpiWaf <- terra::rast(paste0("app/ecosystemology/datainput/", inputEEList[[i]], ".tif"))
+  #Simplify/aggregate it (resolution = 100m * 5 = 500m)
+  ecoSpiWaf_small <- terra::aggregate(ecoSpiWaf, fact=5, fun="max", na.rm=TRUE)
+  #Converting to polygons from the SpatRaster is fast
+  ecoSpiWaf_Po_Terra <- terra::as.polygons(ecoSpiWaf_small, trunc=TRUE, dissolve=TRUE, values=TRUE, na.rm=TRUE, extent=FALSE)
+  ecoSpiWaf_Po_Terra <- ecoSpiWaf_Po_Terra %>% tidyterra::rename(nat = 1)
+  writeVector(ecoSpiWaf_Po_Terra, filename = paste0("app/ecosystemology/datainput/", inputEEList[[i]],".shp"), filetype="ESRI Shapefile", layer=NULL, insert=FALSE, overwrite=TRUE, options="ENCODING=UTF-8")
+}
+
+#check
+xxx = sf::st_read("app/ecosystemology/datainput/ecoSp_20200418143610.shp", crs = 4326, quiet = TRUE)
+colnames(xxx)
+```
+
+
+# Get ecosystem stats combining ecoOccurrences and raster data sources
+Create a hughe loop that will compile all data for all ecoSpi.
+This chunk requires: KBASEY, KBAWaf, ecoSp, EDlastEident (to get EDi), all ecoSp_xxx.shp files from the Shiny app folder. It requires also running the section to get raster maps ecoSp_pre
+It produces the objects ecoSpRLE and KBAStatsAll, as well as a shp file containing all AOO and EOO
+To get the input data, run the chunks starting at line 296.
+This chunk runs in ca. 5 minutes.
+```{r}
+#If not yet run in this session, load EDlastEident (enriched)
+#If necessary get the source ED from Zenodo
+EDlastEident = data.table::fread("app/ecosystemology/datainput/EDlastEident.txt", header = TRUE, sep = "\t")
+EDlastEident$ecoSpeciesID <- as.character(EDlastEident$ecoSpeciesID)
+
+#Load KBA outlines
+KBASey = sf::st_read("app/ecosystemology/datainput/sey_cons_pas2023.shp", crs = 4326, quiet = TRUE) %>% subset(statusID != 8)
+KBASey <- st_make_valid(KBASey)
+
+#Crop it to Inner Islands
+#NOT REALLY NEEDED since I will st_intersection with ecoSp data; I can even merge the two KBA shp that I have for Waf and Sey and it does not affect performance!!
+#KBAi <- st_crop(KBA, st_bbox(extent(raster::raster(EcoSp_cur)), crs=4326))
+#SEY_islgr = sf::st_read("D:/GIS/Seychelles/Admin/Outline/sey_eez_islgroup.shp", crs = 4326, quiet = TRUE)
+#sf::sf_use_s2(FALSE)
+#KBAi <- st_crop(KBA, st_bbox(extent(SEY_islgr[SEY_islgr$isl_gr == "SEI-OO",])))
+
+#Load West African KBAs
+KBAWaf = st_read("app/ecosystemology/datainput/Guinea_Liberia_SierraLeone_Ivory Coast_KBA.shp", crs = 4326, quiet = TRUE)
+
+#KBA <- KBASey
+#KBA <- KBA %>% dplyr::select(kbaName, islGroup, status)
+KBA <- rbind(KBASey %>% dplyr::select(kbaName), KBAWaf %>% dplyr::select(NatName) %>% rename(kbaName = NatName))
+KBA <- left_join(KBA, KBASey %>% as.data.frame() %>% dplyr::select(kbaName, islGroup, status, -geometry), by = "kbaName")
+
+KBAWEA <- sf::st_transform(KBA, crs=4087)
+KBAWEAProtected <- KBAWEA %>% dplyr::filter(status == "National Park" | status == "Reserve-Special Reserve" | status == "Reserve-Nature Reserve" | status == "Reserve-Bird Reserve")
+
+
+#Pick an ecoSpeciesID
+#ecoSpeciesIDi <- "20230109130519" #Lowland mesic forest 118 #20230109135843 = 220
+#NNOOOP, precisely, not anymore, I am gonna loop on all ecoSpi
+#View the checklist of ecoSpecies (to make some tests, including ecoSp without data, e.g. 20230109151030 submontane cliffs
+#DT::datatable(ecoSp[,c("synof_ecoSpecies", "synof_ecoSpeciesID", "ecoSpecies", "ecoSpeciesID", "ecoSpeciesAuthor", "nomenclaturalStatus")]) %>% DT::formatStyle(columns= 1:6, lineHeight='90%')
+
+#Get the complete list of ecoSpecies to get stats from over KBAs and RLE: 158
+#I can use either ecoSpeciesListAll or filter ecoSp to nomenclaturalStatus = aa- or ab-: 158
+#ecoSpeciesIDList <- ecoSp %>% dplyr::filter(grepl('aa-|ab-', nomenclaturalStatus)) %>% dplyr::select(ecoSpeciesID)
+#test with the first 10 records from Seychelles
+ecoSpeciesIDList <- ecoSp %>% dplyr::filter(grepl('aa-|ab-', nomenclaturalStatus) & grepl('Seychelles', ecoSpecies)) %>% dplyr::select(ecoSpeciesID) #& grepl('Seychelles', ecoSpecies) xxedit limit to Seychelles or not
+#ecoSpeciesIDList <- ecoSpeciesIDList[1:10,]
+
+#Create an empty table to receive ecoSpi RLE results
+#ecoSpRLE <- ecoSpeciesIDList  %>% mutate(index = NA, value = NA, units = NA) %>% dplyr::filter(ecoSpeciesID == "lalala")
+#OR rather (updated) start with the stats on prehuman cover: ecoSpiRLETotalPre
+ecoSpRLE = data.table::fread("app/ecosystemology/datainput/ecoSpiRLETotalPre.txt", header = TRUE, sep = "\t")
+ecoSpRLE$ecoSpeciesID <- as.character(ecoSpRLE$ecoSpeciesID)
+
+#Create an empty data.frame for KBAStatsAll
+KBAStatsAll <- data.frame("kbaName", "area_ha", "status", "ratioOfTotal", "ecoSpeciesID", "areaNat", "ratioOfTotalNat", "ratioOfTotalNatKBA") %>% rename(kbaName=1, area_ha=2, status=3, ratioOfTotal=4, ecoSpeciesID=5, areaNat=6, ratioOfTotalNat=7, ratioOfTotalNatKBA=8) %>% dplyr::filter(kbaName == "lalala")
+
+#Load an empty AOOEOOAll (compilation of all ecoSpi AOO-EOO maps)
+AOOEOOAll = sf::st_read("app/ecosystemology/datainput/AOOEOOAll.shp", crs = 4326, quiet = TRUE)
+AOOEOOAll <- AOOEOOAll %>% dplyr::filter(ecoSpID == "lalala")
+
+#ecoSpeciesIDList <- xxxx %>% dplyr::filter(is.na(n)) %>% dplyr::select(ecoSpeciesID)
+
+for (i in 1:nrow(ecoSpeciesIDList)){
+  #Get the ième ecoSpeciesID of the list
+  ecoSpeciesIDi <- ecoSpeciesIDList[i,]$ecoSpeciesID #e.g. 118=lowland mesic forest=20230109130519
+
+  #Get the distribution data from EDlastEident (Zenodo eco-occurrence data source)
+  EDi <- EDlastEident[EDlastEident$isMappable == 1 & EDlastEident$ecoSpeciesID == paste0(ecoSpeciesIDi),] #251
+  #Obviously, for some ecoSpi, at present, we won't have any data contained in the results, e.g. 20230109174146 intertidal progressive mangrove
+  #Get the point sf object of EDi
+  EDi_Pt <- sf::st_as_sf(EDi, coords = c("decimalLongitude", "decimalLatitude"), crs=4326 )
+  #EDi_Pt_Map #ecoSpeciesMapview <- mapview(EDiMap, zcol = "nomenclaturalStatus")
+  #Convert the text attribute 'ecoNaturalness' into a conservation value (cv) index like for raster
+  EDi_Pt$nat <- ifelse(
+    EDi_Pt$ecoNaturalness == "natural", 10,
+    ifelse(EDi_Pt$ecoNaturalness == "semi-natural", 1, NA)
+  )
+  
+  #Add basic stats on nb of occurrence in ecoSpiRLE
+  ecoSpiRLEnOcc <- list(ecoSpeciesIDi, "nOcc", nrow(EDi_Pt), "Number of occurrences") %>% as.data.frame() %>% rename(ecoSpeciesID = 1, index = 2, value = 3, units = 4)
+  ecoSpiRLEnOccNat <- list(ecoSpeciesIDi, "nOccNat", nrow(EDi_Pt %>% dplyr::filter(nat == 10)), "Number of occurrences in natural state") %>% as.data.frame() %>% rename(ecoSpeciesID = 1, index = 2, value = 3, units = 4)
+  ecoSpRLE <- rbind(ecoSpRLE, ecoSpiRLEnOcc, ecoSpiRLEnOccNat)
+  
+  #Get EDi_Pt in WEA since I am focusing on RLE and areas measurement and I need projected
+  EDi_PtWEA <- sf::st_transform(EDi_Pt, crs=4087)
+  
+  # xx needed for the mapping, which I do later, so outdated here
+  #EDi_Pt_Map <- EDi_Pt %>% dplyr::select(ecoOccurrenceID, recordedBy, recordNumber, eventDate, habitat, degreeOfInvasion, ecoNaturalness, ecoStage, nplots, nomenclaturalStatus, nat)
+  #mapview(EDi_Pt_Map, zcol = "nomenclaturalStatus")
+
+  #Get the ecoSpi raster saved in shp format 
+  #(previously I saved raster files but this is much slower to load and to map with mapview; geojson is also heavier than shp)
+  if(file.exists(paste0("app/ecosystemology/datainput/ecoSp_",ecoSpeciesIDi,".shp"))) {
+  ecoSpi_cur_cv_Po <- sf::st_read(paste0("app/ecosystemology/datainput/ecoSp_",ecoSpeciesIDi,".shp"), crs = 4326, quiet = TRUE)
+  #Then reproject it right away
+  ecoSpi_cur_cv_PoWEA <- sf::st_transform(ecoSpi_cur_cv_Po, crs=4087)
+  }
+  
+  ################################## Try adding for WAf, but since I cann get the shp format in that case, can I not do directly the convertion to points, which I need for the RLE?
+  #Read the ecoSp_ individual rasters saved during version 1.0 as .tif in Shiny app folder
+  #xxx <- terra::rast(paste0("D:/ZAnalysis/ecosystemology/bioecosystemShiny/", "ecoSp_20200418143610.tif")) #6.4Mb
+  #xxxPt <- terra::as.points(xxx, values=TRUE, na.rm=TRUE, na.all=FALSE)
+    #terra::as.points(ecoSpiWaf, trunc=TRUE, dissolve=TRUE, values=TRUE, na.rm=TRUE, extent=FALSE)
+
+  
+  #Getting the RLE assesment
+  #Converting the polygonized raster to sf point features (if exists)
+  if(file.exists(paste0("app/ecosystemology/datainput/ecoSp_",ecoSpeciesIDi,".shp"))) {
+  #Get the area of the shp to know how to sample it
+  #testArea <- ecoSpi_cur_cv_Po %>% dplyr::group_by() %>% summarize(geometry = st_union(geometry))
+  testArea <- ecoSpi_cur_cv_PoWEA
+  testArea$area_m2 <- st_area(testArea)
+  testArea <- testArea %>% dplyr::group_by() %>% dplyr::summarise(area_m2 = sum(area_m2, na.rm = TRUE))
+  testArea <- testArea$area_m2 %>% units::drop_units()
+  sizei <- ifelse(testArea < 10000, 1, round(testArea/5000, digits = 0))
+  sizei <- ifelse(sizei > 1000, 1000, sizei)
+  ecoSpi_cur_cv_PtWEA <- st_sample(ecoSpi_cur_cv_PoWEA, size = sizei, type = "regular") #ecoSpi_raster_Pt ; or size = 1000
+  ecoSpi_cur_cv_PtWEA <- st_as_sf(ecoSpi_cur_cv_PtWEA) #from sfc_Point to sf
+  #st_sample loses the attributes of the polygon source, so I need to recover these (nat)
+  ecoSpi_cur_cv_PtWEA = st_join(ecoSpi_cur_cv_PtWEA, ecoSpi_cur_cv_PoWEA)
+  ecoSpi_cur_cv_PtWEA <- ecoSpi_cur_cv_PtWEA %>% mutate(ecoSpeciesID = ecoSpeciesIDi) %>% dplyr::select(ecoSpeciesID, nat)# %>% rename(geometry = x) %>% st_set_crs(4326) #No idea why the sf geometry ended up being named "x"?
+
+  #Combine the raster data source with the ecoOccurrence points
+  ecoSpiAllWEA <- rbind(EDi_PtWEA %>% dplyr::select(ecoSpeciesID, nat, geometry), ecoSpi_cur_cv_PtWEA)
+  } else {
+    ecoSpiAllWEA <- EDi_PtWEA %>% dplyr::select(ecoSpeciesID, nat, geometry)
+  }
+
+  #Get the RLE using redlistr: requires input as spatial points (sp) or raster with CRS in meters (For Guinea: UTM29N (EPSG=32629)) ###32740 for Seychelles
+  #OR Aug.2022 better use EPSG:4087, WGS 84 / World Equidistant Cylindrical
+  #CEQDprj <- 4087 #Recommended by the KBA guidelines
+  #outdated, i do this earlier; ecoSpiAllWEA <- sf::st_transform(ecoSpiAll, crs=4087)
+
+
+  #For RLE the standard grid size is in principle 10000 (10 km), but for Seychelles I might also want to see a 2km grid and functional occurrence grid cells (see 6 KBA report 2022)
+  #BUT in general I definitly want to enrich the grid attributes with more nice indices of biodiversity and conservation value, from a specific eco-species perspective
+  #WE WANT THE COLORING OF THE POINT OCCURRENCE AND GRID CELLS TO REFLECT STATE CONDITION
+  if(nrow(ecoSpiAllWEA)>1) {
+    #Convert the sf object to sp 'SpatialPoint' format required by redlistr
+      ecoSpiAllWEA_sp <- as(ecoSpiAllWEA, "Spatial")
+      AOO2km <- getAOO(ecoSpiAllWEA_sp, grid.size = 2000, min.percent.rule = FALSE, percent = 10)
+      AOO10km <- getAOO(ecoSpiAllWEA_sp, grid.size = 10000, min.percent.rule = FALSE, percent = 10)
+      EOOpolygon <- makeEOO(ecoSpiAllWEA_sp)
+      EOOarea <- round(getAreaEOO(EOOpolygon), digits=1)
+      EOOpolygon$EOOkm2 <- EOOarea
+      AOO2kmpolygon <- makeAOOGrid(ecoSpiAllWEA_sp, 2000, min.percent.rule = FALSE,percent = 10)
+      AOO2kmpolygon$AOO2kmCells <- AOO2km
+      AOO10kmpolygon <- makeAOOGrid(ecoSpiAllWEA_sp, 10000, min.percent.rule = FALSE,percent = 10)
+      AOO10kmpolygon$AOO10kmCells <- AOO10km
+      
+      #Export and compile all AOO-EOO into a shapefile for easy use in Shiny
+      EOOcompile <- st_as_sf(EOOpolygon) %>% rename(value = EOOkm2) %>% mutate(ecoSpID = ecoSpeciesIDi, AOOEOO = "EOO", count = "")
+      AOO2kmcompile <- st_as_sf(AOO2kmpolygon) %>% rename(value = AOO2kmCells) %>% mutate(ecoSpID = ecoSpeciesIDi, AOOEOO = "AOO2km")
+      AOO10kmcompile <- st_as_sf(AOO10kmpolygon) %>% rename(value = AOO10kmCells) %>% mutate(ecoSpID = ecoSpeciesIDi, AOOEOO = "AOO10km")
+      AOOEOOAlli <- rbind(EOOcompile, AOO2kmcompile, AOO10kmcompile) %>% dplyr::select(ecoSpID, AOOEOO, value, count) 
+      AOOEOOAlli <- sf::st_transform(AOOEOOAlli, crs=4326)
+      #Combine the above results with the loaded empty AOOEOOAll to update it
+      AOOEOOAll <- rbind(AOOEOOAll, AOOEOOAlli)
+
+      
+      #Add these results to the compilation of RLE evaluations on all ecoSpp
+      ecoSpiRLEAOO2km <- list(ecoSpeciesIDi, "AOO2km", AOO2km, "2km grid cells") %>% as.data.frame() %>% rename(ecoSpeciesID = 1, index = 2, value = 3, units = 4)
+      ecoSpiRLEAOO10km <- list(ecoSpeciesIDi, "AOO10km", AOO10km, "10km grid cells") %>% as.data.frame() %>% rename(ecoSpeciesID = 1, index = 2, value = 3, units = 4)
+      ecoSpiRLEEOO <- list(ecoSpeciesIDi, "EOO", EOOarea, "km2") %>% as.data.frame() %>% rename(ecoSpeciesID = 1, index = 2, value = 3, units = 4)
+      ecoSpRLE <- rbind(ecoSpRLE, ecoSpiRLEAOO2km, ecoSpiRLEAOO10km, ecoSpiRLEEOO)
+    }
+  
+  #Getting the RLE for Natural distrib
+  ecoSpiAllWEANat <- ecoSpiAllWEA %>% dplyr::filter(nat == 10)
+
+  if(nrow(ecoSpiAllWEANat)>1) {
+  ecoSpiAllWEANat_sp <- as(ecoSpiAllWEANat, "Spatial")
+  AOO2kmNat <- getAOO(ecoSpiAllWEANat_sp, grid.size = 2000, min.percent.rule = FALSE, percent = 10)
+  AOO10kmNat <- getAOO(ecoSpiAllWEANat_sp, grid.size = 10000, min.percent.rule = FALSE, percent = 10)
+  EOOpolygonNat <- makeEOO(ecoSpiAllWEANat_sp)
+  EOOareaNat <- round(getAreaEOO(EOOpolygonNat), digits=1)
+  EOOpolygonNat$EOOkm2 <- EOOareaNat
+  AOO2kmpolygonNat <- makeAOOGrid(ecoSpiAllWEANat_sp, 2000, min.percent.rule = FALSE,percent = 10)
+  AOO2kmpolygonNat$AOO2kmCells <- AOO2kmNat
+  AOO10kmpolygonNat <- makeAOOGrid(ecoSpiAllWEANat_sp, 10000, min.percent.rule = FALSE,percent = 10)
+  AOO10kmpolygonNat$AOO10kmCells <- AOO10kmNat
+  
+  #Export and compile all AOO-EOO into a shapefile for easy use in Shiny
+  EOOcompileNat <- st_as_sf(EOOpolygonNat) %>% rename(value = EOOkm2) %>% mutate(ecoSpID = ecoSpeciesIDi, AOOEOO = "EOONat", count = "")
+  AOO2kmcompileNat <- st_as_sf(AOO2kmpolygonNat) %>% rename(value = AOO2kmCells) %>% mutate(ecoSpID = ecoSpeciesIDi, AOOEOO = "AOO2kmNat")
+  AOO10kmcompileNat <- st_as_sf(AOO10kmpolygonNat) %>% rename(value = AOO10kmCells) %>% mutate(ecoSpID = ecoSpeciesIDi, AOOEOO = "AOO10kmNat")
+  AOOEOOAllNati <- rbind(EOOcompileNat, AOO2kmcompileNat, AOO10kmcompileNat) %>% dplyr::select(ecoSpID, AOOEOO, value, count) 
+  AOOEOOAllNati <- sf::st_transform(AOOEOOAllNati, crs=4326)
+  #Combine the above results with the loaded empty AOOEOOAll to update it
+  AOOEOOAll <- rbind(AOOEOOAll, AOOEOOAllNati)
+  
+  #Add these results to the compilation of RLE evaluations on all ecoSpp
+  ecoSpiRLEAOO2kmNat <- list(ecoSpeciesIDi, "AOO2kmNat", AOO2kmNat, "2km grid cells") %>% as.data.frame() %>% rename(ecoSpeciesID = 1, index = 2, value = 3, units = 4)
+  ecoSpiRLEAOO10kmNat <- list(ecoSpeciesIDi, "AOO10kmNat", AOO10kmNat, "10km grid cells") %>% as.data.frame() %>% rename(ecoSpeciesID = 1, index = 2, value = 3, units = 4)
+  ecoSpiRLEEOONat <- list(ecoSpeciesIDi, "EOONat", EOOareaNat, "km2") %>% as.data.frame() %>% rename(ecoSpeciesID = 1, index = 2, value = 3, units = 4)
+  ecoSpRLE <- rbind(ecoSpRLE, ecoSpiRLEAOO2kmNat, ecoSpiRLEAOO10kmNat, ecoSpiRLEEOONat)
+}
+
+#OK So that will give me at the end of the loop all RLE evaluation in "ecoSpRLE"
+  
+  
+  #Now get the KBA stats for the ecoSpi (I need to have run the KBA loading line before the loop)
+  # Now I need to get the equivalent of ecoSpiAllWEA and ecoSpiAllWEANat but for polygons and as sf
+  #ecoSpi_cur_cv_Po + polygonized version of EDi_Pt
+  if(nrow(EDi_PtWEA) > 0) {
+  EDi_PoWEA <- st_buffer(EDi_PtWEA, 25) #25) 0.0002 =ca. 23m in decimal degrees (crs of EDi_Pt)
+  } else {
+    EDi_PoWEA <- EDi_PtWEA
+  }
+  
+  #Again use 'exists' to avoid issues when no raster data exist
+  if(file.exists(paste0("app/ecosystemology/datainput/ecoSp_",ecoSpeciesIDi,".shp"))) {
+  ecoSpiAll_PoWEA <- rbind(EDi_PoWEA %>% dplyr::select(nat), ecoSpi_cur_cv_PoWEA %>% dplyr::select(nat))
+  } else {
+    ecoSpiAll_PoWEA <- EDi_PoWEA %>% dplyr::select(nat)
+  }
+  
+  #outdated: ecoSpiAll_PoWEA <- sf::st_transform(ecoSpiAll_Po, crs=4087)
+  
+  ecoSpiAll_PoWEANat <- ecoSpiAll_PoWEA %>% dplyr::filter(nat == 10)
+
+  if(nrow(ecoSpiAll_PoWEA) > 0) {
+  
+  #Before intersecting with KBA, get the total stats on the area cover (we do want to get this here using ecoSpiAll_PoWEA, and not using ecoSpi_cur_cv_PoWEA, because for some ecosystem types, we rely mostly on occurrence data, not on existing raster maps)
+  totalArea <- ecoSpiAll_PoWEA %>% dplyr::group_by() %>% summarize(geometry = st_union(geometry))
+  totalArea <- round(st_area(totalArea) / 10000, digits = 1) %>% units::drop_units()
+  
+  #Get the same stats for natural area (in and out KBAs)
+  if(nrow(ecoSpiAll_PoWEANat) > 0) {
+  totalAreaNat <- ecoSpiAll_PoWEANat %>% dplyr::group_by() %>% summarize(geometry = st_union(geometry))
+  totalAreaNat <- round(st_area(totalAreaNat) / 10000, digits = 1) %>% units::drop_units()
+  } else {
+    totalAreaNat <- 0
+  }
+  
+  #Get the same stats for in-Protected area
+  ecoSpiAll_PoWEA_PA <- st_intersection(KBAWEAProtected, ecoSpiAll_PoWEA)
+  #adding st_geometry above avoids having many warning messages
+  if(nrow(ecoSpiAll_PoWEA_PA) > 0) {
+  totalAreaPA <- ecoSpiAll_PoWEA_PA %>% dplyr::group_by() %>% summarize(geometry = st_union(geometry))
+  totalAreaPA <- round(st_area(totalAreaPA) / 10000, digits = 1) %>% units::drop_units()
+  } else {totalAreaPA <- 0}
+  
+    #And finally for natural areas in-Protected areas
+  ecoSpiAll_PoWEA_PANat <- ecoSpiAll_PoWEA_PA %>% dplyr::filter(nat == 10)
+  if(nrow(ecoSpiAll_PoWEA_PANat) > 0) {
+  totalAreaPANat <- ecoSpiAll_PoWEA_PANat %>% dplyr::group_by() %>% summarize(geometry = st_union(geometry))
+  totalAreaPANat <- round(st_area(totalAreaPANat) / 10000, digits = 1) %>% units::drop_units()
+} else {totalAreaPANat <- 0}
+  
+  #Add these stats to ecoSpiRLE
+  ecoSpiRLETotal <- list(ecoSpeciesIDi, "Total area", totalArea, "ha") %>% as.data.frame() %>% rename(ecoSpeciesID = 1, index = 2, value = 3, units = 4)
+  ecoSpiRLETotalNat <- list(ecoSpeciesIDi, "Total area in natural state", totalAreaNat, "ha") %>% as.data.frame() %>% rename(ecoSpeciesID = 1, index = 2, value = 3, units = 4)
+  ecoSpiRLETotalPA <- list(ecoSpeciesIDi, "Total area protected", totalAreaPA, "ha") %>% as.data.frame() %>% rename(ecoSpeciesID = 1, index = 2, value = 3, units = 4)
+  ecoSpiRLETotalPANat <- list(ecoSpeciesIDi, "Total area in natural state & protected", totalAreaPANat, "ha") %>% as.data.frame() %>% rename(ecoSpeciesID = 1, index = 2, value = 3, units = 4)
+  ecoSpRLE <- rbind(ecoSpRLE, ecoSpiRLETotal, ecoSpiRLETotalNat, ecoSpiRLETotalPA, ecoSpiRLETotalPANat)
+  
+    
+  #Now get stats individually for within each KBA
+  #sf::sf_use_s2(FALSE) #This also could be done just once before the loop
+  #st_agr(KBAWEA) = "constant"
+  #st_agr(ecoSpiAll_PoWEA) = "constant"
+  KBAecoSpiAll_PoWEA <- st_intersection(KBAWEA, ecoSpiAll_PoWEA) 
+  #N.B. I could also count the intercted AOO for each KBA using the following line, but it does not reflect well the reality as it is too much influenced by the random position of the AOO grid cells, and it is better to look at exact polygon distribution data #xx <- st_intersection(KBA, AOOpolygon %>% st_as_sf() %>% sf::st_transform(crs=4326))
+  #KBAiEcoSpiAll_Poutm <- sf::st_transform(KBAiEcoSpiAll_Po, crs=32740)
+  #OR Aug.2022 better use EPSG:4087, WGS 84 / World Equidistant Cylindrical
+  #CEQDprj <- 4087 #Recommended by the KBA guidelines
+  #KBAecoSpiAll_PoWEA <- sf::st_transform(KBAecoSpiAll_Po, crs=4087)
+
+  KBAecoSpiAll_PoWEA$area_ha <- round(st_area(KBAecoSpiAll_PoWEA) / 10000, digits=1) %>% units::drop_units()
+
+  KBAecoSpiAll_PoWEA <- KBAecoSpiAll_PoWEA %>% dplyr::group_by(kbaName) %>% dplyr::summarize(area_ha = sum(area_ha, na.rm = TRUE))#geometry = st_union(geometry), 
+
+  KBAStats <- dplyr::select(as.data.frame(KBAecoSpiAll_PoWEA), -geometry)
+
+  KBAStats <- with(KBAStats, KBAStats[order(-area_ha) , ])
+  
+  #Add the ratio to total (calculated earlier)
+  KBAStats <- left_join(KBAStats, as.data.frame(KBA) %>% dplyr::select(kbaName, status, -geometry), by = "kbaName")
+  KBAStats$ratioOfTotal <- round(KBAStats$area_ha *100 / totalArea, digits=1)
+  
+  #KBAStats <- dplyr::select(as.data.frame(KBAStats), -geometry)
+  if(nrow(KBAStats) > 0) {
+  KBAStats$ecoSpeciesID <- ecoSpeciesIDi
+  }
+} #Close this long if : if(nrow(ecoSpiAll_PoWEA > 0)) {
+
+  #Now for the natural areas, in-KBA
+  #st_agr(ecoSpiAll_PoWEANat) = "constant"
+  KBAecoSpiAll_PoWEANat <- st_intersection(KBAWEA, ecoSpiAll_PoWEANat) 
+
+  if(nrow(KBAecoSpiAll_PoWEANat) > 0) {
+  KBAecoSpiAll_PoWEANat$areaNat <- round(st_area(KBAecoSpiAll_PoWEANat) / 10000, digits=1) %>% units::drop_units()
+
+  KBAecoSpiAll_PoWEANat <- KBAecoSpiAll_PoWEANat %>% dplyr::group_by(kbaName) %>% dplyr::summarize(areaNat = sum(areaNat, na.rm = TRUE))#geometry = st_union(geometry), 
+
+  KBAStatsNat <- dplyr::select(as.data.frame(KBAecoSpiAll_PoWEANat), -geometry)
+
+  KBAStatsNat <- with(KBAStatsNat, KBAStatsNat[order(-areaNat) , ])
+
+  #Get the total ha cover of the ecosystem (Nat) for all KBAs
+  totalAreaNatKBA <- KBAStatsNat %>% dplyr::group_by() %>% dplyr::summarise(totNat = sum(areaNat, na.rm=TRUE))
+  totalAreaNatKBA <- round(totalAreaNatKBA$totNat, digits = 1)
+  
+  #Join the earlier KBAStats to these ones and add the ratioToAllNatKBA
+  KBAStatsNat <- left_join(KBAStatsNat, as.data.frame(KBA) %>% dplyr::select(kbaName, status, -geometry), by = "kbaName")
+  KBAStatsNat$ratioOfTotalNat <- round(KBAStatsNat$areaNat *100 / totalAreaNat, digits=1)
+  KBAStatsNat$ratioOfTotalNatKBA <- round(KBAStatsNat$areaNat *100 / totalAreaNatKBA, digits=1)
+
+  #Join the total and natural stats
+  KBAStatsAllecoSpi <- left_join(KBAStats, KBAStatsNat %>% dplyr::select(kbaName, areaNat, ratioOfTotalNat, ratioOfTotalNatKBA), by = "kbaName")
+  
+  #Add the results to the compiled table
+  KBAStatsAll <- rbind(KBAStatsAll, KBAStatsAllecoSpi)# %>% dplyr::select(-geometry))
+  } #Close this second long if: if(nrow(KBAecoSpiAll_PoNatWEA) > 0) {
+  
+} #Finally ... close this loop and ... it works
+
+#Export the compiled AOO-EOO for all ecoSpi for use in Shiny
+st_write(AOOEOOAll, "app/ecosystemology/datainput/AOOEOOAll.shp", driver = "ESRI Shapefile", append = FALSE)
+
+#The other 2 main outputs (ecoSpRLE and KBAStatsAll) are exported below, after a few manipulations
+
+#Finding where the issue is
+#xx <- ecoSpRLE %>% group_by(ecoSpeciesID) %>% summarise(n=n())
+#xxxx <- left_join(ecoSpeciesIDList, xx %>% mutate(link = 1), by = "ecoSpeciesID")
+#xxxx <- left_join(xxxx, ecoSp %>% select(ecoSpeciesID, ecoSpecies), by = "ecoSpeciesID")
+#View(xxxx)
+```
+
+# Compile tables on the stats provided above
+```{r}
+#ecoSpRLEStats <- crosstable::crosstable(ecoSpRLE, ecoSpeciesID, by=index)
+#NO, simply use reshape to convert the table from long to wide
+ecoSpRLEStats <- reshape(ecoSpRLE %>% dplyr::select(-units), idvar = "ecoSpeciesID", timevar = "index", direction = "wide") %>% rename(AreaTotPre_ha = 2, nOcc = 3, nOccNat = 4, AreaTot_ha = 5, AreaTotNat_ha = 6, AreaTotPA_ha = 7, AreaTotNatPA_ha = 8, AOO2km = 9, AOO10km = 10, EOO = 11, AOO2kmNat = 12, AOO10kmNat = 13, EOONat = 14)
+#Add the RLEStatus
+ecoSpRLEStats <- left_join(ecoSpRLEStats, ecoSpProfProto %>% dplyr::select(ecoSpeciesID, RLEStatus), by = "ecoSpeciesID")
+#Add some more stats
+ecoSpRLEStats$ratioNat <- round(ecoSpRLEStats$AreaTotNat_ha * 100 / ecoSpRLEStats$AreaTot_ha, digits = 1)
+ecoSpRLEStats$ratioPre <- round(ecoSpRLEStats$AreaTot_ha * 100 / ecoSpRLEStats$AreaTotPre_ha, digits = 1)
+ecoSpRLEStats$ratioPreNat <- round(ecoSpRLEStats$AreaTotNat_ha * 100 / ecoSpRLEStats$AreaTotPre_ha, digits = 1)
+ecoSpRLEStats$ratioPA <- round(ecoSpRLEStats$AreaTotPA_ha * 100 / ecoSpRLEStats$AreaTot_ha, digits = 1)
+
+#View it
+DT::datatable(setDT(left_join(ecoSpRLEStats, ecoSp %>% dplyr::select(ecoSpeciesID, ecoSpecies), by = "ecoSpeciesID")))
+
+#Write/save it to the Shiny app folder
+data.table::fwrite(setDT(ecoSpRLEStats), file = "app/ecosystemology/datainput/ecoSpRLEStats.txt", append = FALSE, quote = TRUE, sep = "\t")
+
+#Now with the KBA-ecoSpi stats
+KBAStatsAll <- left_join(KBAStatsAll, ecoSp %>% dplyr::select(ecoSpeciesID, ecoSpecies), by = "ecoSpeciesID")
+ecoSpProfProto <- ecoSpProf %>% dplyr::filter(isProtologue == 1)
+ecoSpProfProto$ecoSpeciesID <- as.character(ecoSpProfProto$ecoSpeciesID)
+KBAStatsAll <- left_join(KBAStatsAll, ecoSpProfProto %>% dplyr::select(ecoSpeciesID, BIOL4ID, RLEStatus), by = "ecoSpeciesID")
+
+#Find out all KBA triggers and the criteria triggering
+#A2a: CR-EN & ratio > 5% ; A2b: VU & ratio > 10% ; B4: any & ratio > 20%
+KBAStatsAll$isTrigger <- ifelse((grepl("^CR", KBAStatsAll$RLEStatus) | grepl("^EN", KBAStatsAll$RLEStatus)) & KBAStatsAll$ratioOfTotal >= 5, "A2a", "")
+
+KBAStatsAll$isTrigger <- ifelse((grepl("^CR", KBAStatsAll$RLEStatus) | grepl("^EN", KBAStatsAll$RLEStatus)) & KBAStatsAll$ratioOfTotalNat >= 5, paste0(KBAStatsAll$isTrigger, " ", "A2an"), KBAStatsAll$isTrigger)
+
+KBAStatsAll$isTrigger <- ifelse(grepl("^VU", KBAStatsAll$RLEStatus) & KBAStatsAll$ratioOfTotal >= 10, "A2b", KBAStatsAll$isTrigger)
+
+KBAStatsAll$isTrigger <- ifelse(grepl("^VU", KBAStatsAll$RLEStatus) & KBAStatsAll$ratioOfTotalNat >= 10, paste0(KBAStatsAll$isTrigger, " ", "A2bn"), KBAStatsAll$isTrigger)
+
+KBAStatsAll$isTrigger <- ifelse(KBAStatsAll$ratioOfTotal >= 20, paste0(KBAStatsAll$isTrigger, " ", "B4"), KBAStatsAll$isTrigger)
+
+KBAStatsAll$isTrigger <- ifelse(KBAStatsAll$ratioOfTotalNat >= 20, paste0(KBAStatsAll$isTrigger, " ", "B4n"), KBAStatsAll$isTrigger)
+
+#View the list of triggers
+DT::datatable(setDT(KBAStatsAll %>% dplyr::filter(!is.na(isTrigger) & nchar(isTrigger) > 1)))
+
+#Write/save it to the Shiny app folder
+data.table::fwrite(setDT(KBAStatsAll), file = "app/ecosystemology/datainput/KBAStatsAll.txt", append = FALSE, quote = TRUE, sep = "\t")
+```
+
+# Get SDint species data for general KBA stats on triggers
+```{r}
+#CAREFUL! I cannot bring a copy of this file on Github
+SDint = data.table::fread("D:/ZAnalysis/ZDraft/datainput/SDint_sensitive.txt", header = TRUE, sep = "\t", dec = ".", encoding = "UTF-8")
+
+#Filter out all mappable records of presence, in Seychelles only
+SDint$isMappable <- ifelse(!is.na(SDint$decimalLatitude) & SDint$decimalLatitude > -90 & SDint$decimalLatitude < 90 & !is.na(SDint$decimalLongitude) & SDint$decimalLongitude > -180 & SDint$decimalLongitude < 180, 1, 0)
+
+SDint <- SDint %>% dplyr::filter(isMappable == 1 & occurrenceStatus != "absent" & country == "Seychelles")
+
+#Get, for each record remaining, the kbaName (2023) of occurrence
+SDint_sf <- sf::st_as_sf(SDint, coords = c("decimalLongitude", "decimalLatitude"), crs=4326 )
+SDint <- st_join(SDint_sf, KBASey)
+SDint <- as.data.frame(SDint)
+
+#Get for each species (taxonID + scientificName), the total number of records
+spiAb <- SDint %>% dplyr::group_by(taxonID, scientificName) %>% dplyr::summarise(n = n())
+
+#Get the same but for each species in each KBA
+spiKBAAb <- SDint %>% dplyr::filter(!is.na(kbaName)) %>% dplyr::group_by(kbaName, taxonID, scientificName) %>% dplyr::summarise(nKBA = n())
+
+#Put the two total (n) together with the last result
+spKBAStats <- left_join(spiKBAAb, spiAb %>% dplyr::select(taxonID, n), by = "taxonID")
+
+#Get the ratio
+spKBAStats$ratio <- round(spKBAStats$nKBA * 100 / spKBAStats$n, digits = 1)
+
+#Add the species IUCN status Global and National
+SP2acc = data.table::fread("D:/ZAnalysis/seychecklist/app/bioflora/SP2acc.txt", header = TRUE, sep = "\t", dec = ".", encoding = "UTF-8")
+spKBAStats <- left_join(spKBAStats, SP2acc %>% select(taxonID, vernacularName, species_short, establishmentMeansNat, threatStatusNat, threatStatusGlobal) %>% dplyr::filter(grepl("native", establishmentMeansNat)), by = "taxonID")
+
+#Get isTrigger
+#A2a: CR-EN & ratio > 5% ; A2b: VU & ratio > 10% ; B4: any & ratio > 20%
+spKBAStats$isTrigger <- ifelse((grepl("^CR", spKBAStats$threatStatusGlobal) | grepl("^EN", spKBAStats$threatStatusGlobal)) & spKBAStats$ratio >= 5, "A2a", "")
+
+spKBAStats$isTrigger <- ifelse((grepl("^CR", spKBAStats$threatStatusNat) | grepl("^EN", spKBAStats$threatStatusNat)) & spKBAStats$ratio >= 5, paste0(spKBAStats$isTrigger, " ", "A2an"), spKBAStats$isTrigger)
+
+spKBAStats$isTrigger <- ifelse(grepl("^VU", spKBAStats$threatStatusGlobal) & spKBAStats$ratio >= 10, "A2b", spKBAStats$isTrigger)
+
+spKBAStats$isTrigger <- ifelse(grepl("^VU", spKBAStats$threatStatusNat) & spKBAStats$ratio >= 10, paste0(spKBAStats$isTrigger, " ", "A2bn"), spKBAStats$isTrigger)
+
+spKBAStats$isTrigger <- ifelse(spKBAStats$ratio >= 20, paste0(spKBAStats$isTrigger, " ", "B4"), spKBAStats$isTrigger)
+
+#View the result
+DT::datatable(spKBAStats %>% dplyr::select(kbaName, species_short, vernacularName, establishmentMeansNat, threatStatusNat,threatStatusGlobal, nKBA, ratio, isTrigger))
+
+#Export the result to ecosystemology app folder (just easier)
+data.table::fwrite(setDT(spKBAStats), file = "app/ecosystemology/datainput/spKBAStats.txt", append = FALSE, quote = TRUE, sep = "\t")
+```
+
